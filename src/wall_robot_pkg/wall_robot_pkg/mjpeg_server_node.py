@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
 HTTP MJPEG 视频流服务节点
-- 只提供 /vision/edge_preview 一个话题
-- 打开 http://192.168.137.197:5000 直接显示视频
-- 帧率 10fps，JPEG 质量 30，保持 640x480
+- 订阅 /vision/edge_preview/compressed（预压缩 JPEG 数据）
+- 打开 http://IP:5000 直接显示视频
 """
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from sensor_msgs.msg import CompressedImage
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import threading
-import cv2
-import numpy as np
-
-# ========== MJPEG 流处理器 ==========
 
 mjpeg_frame = None
 frame_lock = threading.Lock()
@@ -37,11 +31,11 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 </style>
 </head>
 <body>
-<img src="/stream" />
+<img src="/video_feed" />
 </body>
 </html>"""
             self.wfile.write(html.encode())
-        elif self.path == "/stream":
+        elif self.path == "/video_feed":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache")
@@ -59,46 +53,37 @@ class MJPEGHandler(BaseHTTPRequestHandler):
                     except:
                         break
                 import time
-                time.sleep(0.1)  # ~10fps
+                time.sleep(0.05)
         else:
             self.send_response(404)
             self.end_headers()
 
     def log_message(self, format, *args):
-        pass  # 不输出访问日志
-
+        pass
 
 class MJPEGServerNode(Node):
     def __init__(self):
         super().__init__("mjpeg_server_node")
-        self.bridge = CvBridge()
+        # 订阅预压缩的 JPEG 数据（直接转发，无需再编码）
         self.sub = self.create_subscription(
-            Image, "/vision/edge_preview", self.image_callback, 10)
+            CompressedImage, "/vision/edge_preview/compressed",
+            self.image_callback, 10)
         self.frame_count = 0
-        self.skip_every = 3  # 30fps -> 10fps
+        self.skip_every = 4  # 30fps -> 7.5fps
 
-        # 启动 HTTP 服务（端口 5000）
-        self.httpd = HTTPServer(("0.0.0.0", 5000), MJPEGHandler)
+        self.httpd = ThreadingHTTPServer(("0.0.0.0", 5000), MJPEGHandler)
         self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.http_thread.start()
-        self.get_logger().info("MJPEG server started: http://0.0.0.0:5000  (640x480, 10fps, edge_preview only)")
+        self.get_logger().info("MJPEG server: http://0.0.0.0:5000/video_feed (pre-compressed, 15fps)")
 
     def image_callback(self, msg):
         self.frame_count += 1
-        # 跳帧: 每 3 帧只处理 1 帧 -> 30fps 降到 10fps
         if self.frame_count % self.skip_every != 0:
             return
-        try:
-            cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            # JPEG 压缩，质量 30，保持 640x480
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
-            result, encimg = cv2.imencode(".jpg", cv_img, encode_param)
-            if result:
-                with frame_lock:
-                    global mjpeg_frame
-                    mjpeg_frame = encimg.tobytes()
-        except Exception as e:
-            self.get_logger().error(f"Compress error: {e}")
+        # msg.data 已经是 JPEG 字节流，直接存储转发
+        with frame_lock:
+            global mjpeg_frame
+            mjpeg_frame = msg.data
 
     def destroy_node(self):
         self.httpd.shutdown()

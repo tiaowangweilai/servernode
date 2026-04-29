@@ -3,7 +3,7 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import String, Float32
 from cv_bridge import CvBridge
 import message_filters
@@ -37,6 +37,7 @@ class VisionProcessorNode(Node):
         self.color_sub = message_filters.Subscriber(self, Image, '/camera/camera/color/image_rect_raw')
         self.depth_sub = message_filters.Subscriber(self, Image, '/camera/camera/aligned_depth_to_color/image_raw')
         self.preview_pub = self.create_publisher(Image, '/vision/edge_preview', 10)
+        self.compressed_pub = self.create_publisher(CompressedImage, "/vision/edge_preview/compressed", 10)
         self.safety_pub = self.create_publisher(String, '/vision/safety_status', 10)
 
         # 3. 时间同步
@@ -103,6 +104,16 @@ class VisionProcessorNode(Node):
             cv2.putText(preview_img, f"Status: {status}", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_txt, 2)
 
             self.preview_pub.publish(self.bridge.cv2_to_imgmsg(preview_img, "bgr8", color_msg.header))
+            # 预压缩为 JPEG 并发布到 compressed 话题（mjpeg_server 直接转发，不再重新编码）
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 40]
+            _result, _encimg = cv2.imencode(".jpg", preview_img, encode_param)
+            if _result:
+                from sensor_msgs.msg import CompressedImage as _CI
+                _compressed = _CI()
+                _compressed.header = color_msg.header
+                _compressed.format = "jpeg"
+                _compressed.data = _encimg.tobytes()
+                self.compressed_pub.publish(_compressed)
 
             # 安全状态
             safety_info = {"status": status, "min_dist_mm": min_dist if min_dist != 9999.0 else -1}

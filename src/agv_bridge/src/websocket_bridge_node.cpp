@@ -12,8 +12,9 @@ namespace agv_bridge {
 class WebSocketBridgeNode : public rclcpp::Node {
 public:
     WebSocketBridgeNode() : Node("websocket_bridge_node") {
-        this->declare_parameter("server_uri", "ws://192.168.137.134:9100");
+        this->declare_parameter("server_uri", "ws://192.168.137.59:9100");
         this->declare_parameter("local_server_port", 9001);
+        this->declare_parameter("robot_id", "vacuum_adsorption_robot");
 
         // 1. 注册设备处理器 (以后加新设备，只需要加一行 registerHandler)
         registerHandler("agv", std::make_shared<ChassisHandler>());
@@ -32,6 +33,18 @@ public:
         auto cmd_handler = [this](const std::string& msg) { handleCommand(msg); };
         ws_client_->setMessageHandler(cmd_handler);
         ws_server_->setMessageHandler(cmd_handler);
+
+        // 上位机连接成功后自动启动所有子节点
+        auto conn_handler = [this](bool connected) {
+            if (connected) {
+                std::string robot_id = this->get_parameter("robot_id").as_string();
+                startLaunch(robot_id);
+            }
+        };
+        ws_client_->setConnectionHandler(conn_handler);
+
+        // 系统命令发布者（转发到 mission_controller）
+        sys_pub_ = this->create_publisher<std_msgs::msg::String>("/mission/command", 10);
 
         ws_client_->start();
         ws_server_->start();
@@ -87,10 +100,6 @@ private:
 
         // --- 逻辑分发 ---
         if (raw_msg.header.msg_type == "check") {
-            // 1. 触发自动启动
-            startLaunch(raw_msg.header.robot_id);
-
-            // 2. 精准获取请求中指定的设备状态
             for (const auto& key : raw_msg.payload.getMemberNames()) {
                 if (handlers_.count(key)) {
                     Json::Value dev_res;
@@ -99,6 +108,19 @@ private:
                     response_payload[key] = dev_res;
                 }
             }
+        } else if (raw_msg.header.msg_type == "update_status") {
+            for (const auto& key : raw_msg.payload.getMemberNames()) {
+                Json::Value cmd_json;
+                cmd_json["command"] = "update_status";
+                cmd_json["status"] = raw_msg.payload[key]["status"];
+                cmd_json["source_key"] = key;
+                auto msg = std_msgs::msg::String();
+                Json::StreamWriterBuilder w;
+                msg.data = Json::writeString(w, cmd_json);
+                sys_pub_->publish(msg);
+                RCLCPP_INFO(this->get_logger(), "update status %s %s", key.c_str(), raw_msg.payload[key]["status"].asString().c_str());
+            }
+            response_payload["ack"] = "ok";
         } else {
             // 根据 Payload 里的 Key 自动找到对应的 Handler 处理
             for (const auto& key : raw_msg.payload.getMemberNames()) {
@@ -119,6 +141,7 @@ private:
     agv_protocol::CommandParser parser_;
     std::unique_ptr<agv_protocol::WebSocketClientWrapper> ws_client_;
     std::unique_ptr<agv_protocol::WebSocketServerWrapper> ws_server_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr sys_pub_;
     std::map<std::string, DeviceHandler::Ptr> handlers_;
     bool launched_ = false;
 };

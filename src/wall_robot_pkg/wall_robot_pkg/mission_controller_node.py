@@ -219,7 +219,10 @@ class MissionController(Node):
             self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
             self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
             self.get_logger().info(f"🛠️ single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
-            self.state = "MANUAL_ACTION"
+        elif cmd == "update_status":
+            status = parsed.get("status", "unknown")
+            source = parsed.get("source_key", "unknown")
+            self.get_logger().info(f"闸门状态更新: [{source}] status={status}")
     def nav_goal_callback(self, msg):
         self.param_width = msg.x
         self.param_height = msg.y
