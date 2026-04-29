@@ -35,6 +35,7 @@ setup(
             'vision_processor_node = wall_robot_pkg.vision_processor_node:main',
             'water_motor_test = wall_robot_pkg.water_motor_test:main',
             'mechanism_driver_node = wall_robot_pkg.mechanism_driver_node:main',
+            'mjpeg_server_node = wall_robot_pkg.mjpeg_server_node:main',
         ],
     },
 )

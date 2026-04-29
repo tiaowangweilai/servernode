@@ -41,11 +41,12 @@ def generate_launch_description():
         rosbridge_launch,
 
         # === 视频流服务器 ===
+        # MJPEG 视频流（仅 /vision/edge_preview，端口 5000）
         Node(
-            package='web_video_server',
-            executable='web_video_server',
-            name='web_video_server',
-            parameters=[{'port': 5000}]
+            package="wall_robot_pkg",
+            executable="mjpeg_server_node",
+            name="mjpeg_server_node",
+            output="screen"
         ),
 
         # === 传感器节点 ===
