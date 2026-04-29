@@ -24,6 +24,7 @@ except ImportError:
 
 class MechanismDriverNode(Node):
     def __init__(self):
+        self.current_ig35_speed = 20
         super().__init__('mechanism_driver_node')
         
         # 🌟 1. 订阅标准控制话题
@@ -31,6 +32,7 @@ class MechanismDriverNode(Node):
         self.m2_sub = self.create_subscription(Int32, '/mech/m2_target', self.m2_callback, 10)
         self.ig35_sub = self.create_subscription(Int32, '/mech/ig35_target', self.ig35_callback, 10)
         self.pushrod_sub = self.create_subscription(Int32, '/mech/push_rod_time', self.pushrod_callback, 10)
+        self.ig35_speed_sub = self.create_subscription(Int32, '/mech/ig35_speed', self.ig35_speed_callback, 10)
         
         # 🌟 2. 硬件统一初始化
         self.ig35_motor = None
@@ -89,13 +91,17 @@ class MechanismDriverNode(Node):
             self.m1m2_motor.set_pos_m2(pulse)
             self.get_logger().info(f"◀️ M2 执行目标脉冲: {pulse}")
 
+    def ig35_speed_callback(self, msg):
+        self.current_ig35_speed = msg.data
+        self.get_logger().info(f"IG35 speed set to: {self.current_ig35_speed} rpm")
+
     def ig35_callback(self, msg):
         target = msg.data
         if self.ig35_motor:
             self.get_logger().info(f"↔️ IG35 横杆开始移动至: {target}")
             try:
                 # 这里的阻塞不再影响全车主控！
-                move_ig35(driver=self.ig35_motor, target_position=target, speed_rpm=20, accel_time_ms=100, decel_time_ms=200, wait_timeout=3, verbose=False)
+                move_ig35(driver=self.ig35_motor, target_position=target, speed_rpm=self.current_ig35_speed, accel_time_ms=100, decel_time_ms=200, wait_timeout=3, verbose=False)
                 self.get_logger().info(f"✅ IG35 到达目标: {target}")
             except Exception as e:
                 self.get_logger().error(f"❌ IG35 移动异常: {e}")

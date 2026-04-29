@@ -6,7 +6,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <mutex>
-
+#include <nav_msgs/msg/path.hpp>  // 🌟 新增：包含路径消息头文件
 namespace agv_bridge {
 
 /**
@@ -19,7 +19,7 @@ public:
         // 手动控制：标准 Twist
         manual_pub_ = node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_manual", 10);
         // 系统任务控制：String JSON
-        sys_pub_ = node->create_publisher<std_msgs::msg::String>("/mission/sys_command", 10);
+        sys_pub_ = node->create_publisher<std_msgs::msg::String>("/mission/command", 10);
         
         // 订阅状态话题用于自检
         sub_ = node->create_subscription<std_msgs::msg::String>(
@@ -43,10 +43,27 @@ public:
             res["result"] = "yes";
         } 
         else if (cmd == "single_scan") {
-            // 完整转发 single_scan 载荷到系统命令话题
+            // 将参数封装为JSON指令发布到 /mission/command
+            Json::Value cmd_json;
+            cmd_json["command"] = "single_scan";
+            if (data.isMember("ig35_start")) cmd_json["ig35_start"] = data["ig35_start"];
+            if (data.isMember("ig35_end"))   cmd_json["ig35_end"] = data["ig35_end"];
+            if (data.isMember("scan_speed")) cmd_json["scan_speed"] = data["scan_speed"];
+            // 兼容 parameters 嵌套结构
+            if (data.isMember("parameters")) {
+                const auto& p = data["parameters"];
+                if (p.isMember("ig35_start")) cmd_json["ig35_start"] = p["ig35_start"];
+                if (p.isMember("ig35_end"))   cmd_json["ig35_end"] = p["ig35_end"];
+                if (p.isMember("scan_speed")) cmd_json["scan_speed"] = p["scan_speed"];
+            }
+            // 如果没有参数则使用默认值
+            if (!cmd_json.isMember("ig35_start")) cmd_json["ig35_start"] = 11;
+            if (!cmd_json.isMember("ig35_end"))   cmd_json["ig35_end"] = 0;
+            if (!cmd_json.isMember("scan_speed")) cmd_json["scan_speed"] = 20;
+            
             auto msg = std_msgs::msg::String();
             Json::StreamWriterBuilder writer;
-            msg.data = Json::writeString(writer, data);
+            msg.data = Json::writeString(writer, cmd_json);
             sys_pub_->publish(msg);
             res["result"] = "yes";
         }
@@ -132,9 +149,26 @@ public:
     void init(rclcpp::Node* node) override {
         node_ = node;
         auto_pub_ = node->create_publisher<std_msgs::msg::String>("/cmd_vel_auto", 10);
+        
         sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
             "/odom", 10, [this](const nav_msgs::msg::Odometry::SharedPtr) {
                 last_update_ = node_->now();
+            });
+
+        // ==========================================
+        // 🌟 新增：订阅主控规划好的路径话题，并打印出来
+        // ==========================================
+        path_sub_ = node->create_subscription<nav_msgs::msg::Path>(
+            "/mission/planned_path", 10, 
+            [this](const nav_msgs::msg::Path::SharedPtr msg) {
+                RCLCPP_INFO(node_->get_logger(), "📍 [ServerNode] 成功捕获主控下发的规划路径！总计 %zu 个目标点:", msg->poses.size());
+                
+                // 遍历打印每一个点的坐标
+                for (size_t i = 0; i < msg->poses.size(); ++i) {
+                    double x = msg->poses[i].pose.position.x;
+                    double y = msg->poses[i].pose.position.y;
+                    RCLCPP_INFO(node_->get_logger(), "   -> 点 [%zu]: x=%.3f m, y=%.3f m", i + 1, x, y);
+                }
             });
     }
 
@@ -158,13 +192,17 @@ public:
         if (!node_) return false;
         return (node_->now() - last_update_).seconds() < 2.0;
     }
+    
 private:
     rclcpp::Node* node_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr auto_pub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_;
+    
+    // 🌟 新增：声明路径订阅器的智能指针
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_; 
+    
     rclcpp::Time last_update_{0, 0, RCL_ROS_TIME};
 };
-
 /**
  * @brief 相机处理器
  */
@@ -194,7 +232,7 @@ public:
 private:
     rclcpp::Node* node_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_rect;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_rect;
     rclcpp::Time last_update_{0, 0, RCL_ROS_TIME};
 };
 

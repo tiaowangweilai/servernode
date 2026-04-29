@@ -86,9 +86,9 @@ class ChassisDriverNode(Node):
             # 这里的逻辑可以根据你的具体需求扩展
             twist = Twist()
             # 尝试解析速度字段
-            twist.linear.x = data.get('vx', 0.0)
-            twist.linear.y = data.get('vy', 0.0)
-            twist.angular.z = data.get('wz', 0.0)
+            twist.linear.x = float(data.get('vx', 0.0))
+            twist.linear.y = float(data.get('vy', 0.0))
+            twist.angular.z = float(data.get('wz', 0.0))
             
             # 也可以在这里记录 target_x, target_y 等参数供其他逻辑使用
             # self.get_logger().info(f"执行自动导航指令, 目标: ({data.get('target_x')}, {data.get('target_y')})")

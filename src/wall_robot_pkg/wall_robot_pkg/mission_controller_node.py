@@ -11,6 +11,7 @@ import math
 import time
 
 from cv_bridge import CvBridge
+import json
 from . import Path_interpolation
 
 # 🌟 删除了所有硬件库导入 (GPIO, IG35, motor_485)
@@ -66,11 +67,13 @@ class MissionController(Node):
         self.manual_sub = self.create_subscription(Twist, '/cmd_vel_manual', self.manual_override_check, 10)
         
         self.cmd_sub = self.create_subscription(String, '/mission/command', self.command_callback, 10)
+        self.auto_cmd_sub = self.create_subscription(String, '/cmd_vel_auto', self.auto_cmd_callback, 10)
         self.nav_goal_sub = self.create_subscription(Point, '/mission/nav_goal', self.nav_goal_callback, 10)
         self.motor_cmd_sub = self.create_subscription(Point, '/mission/motor_cmd', self.motor_cmd_callback, 10)
+        self.params_sub = self.create_subscription(String, '/mission/params', self.params_callback, 10)
 
         # === 2. 发布端 (纯 ROS 话题) ===
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto', 10)
+        self.cmd_pub = self.create_publisher(String, '/cmd_vel_auto', 10)
         self.state_pub = self.create_publisher(String, '/mission/state', 10)
         self.target_idx_pub = self.create_publisher(Int32, '/mission/target_idx', 10)
         self.path_pub = self.create_publisher(Path, '/mission/planned_path', 10)
@@ -80,6 +83,7 @@ class MissionController(Node):
         self.m1_pub = self.create_publisher(Int32, '/mech/m1_target', 10)
         self.m2_pub = self.create_publisher(Int32, '/mech/m2_target', 10)
         self.ig35_pub = self.create_publisher(Int32, '/mech/ig35_target', 10)
+        self.ig35_speed_pub = self.create_publisher(Int32, '/mech/ig35_speed', 10)
         self.pushrod_pub = self.create_publisher(Int32, '/mech/push_rod_time', 10)
 
         # 状态机变量
@@ -100,25 +104,122 @@ class MissionController(Node):
         
         self.ig35_start_pulse = 11
         self.ig35_end_pulse = 0
+        self.scan_speed = 20
 
         self.generate_path(self.param_width, self.param_height, self.param_acc)
         self.timer = self.create_timer(1.0/self.control_freq, self.control_loop)
         
         self.get_logger().info(">>> 主控节点就绪 (✅ 大脑已解耦，不含任何阻塞型硬件驱动代码)")
 
+    # def command_callback(self, msg):
+    #     import json as _json
+    #     raw = msg.data
+    #     try:
+    #         parsed = _json.loads(raw)
+    #         cmd = parsed.get("command", raw)
+    #     except Exception:
+    #         cmd = raw
+    #         parsed = {}
+
+    #     if cmd == "emergency_stop":
+    #         self.state = "IDLE"
+    #         self.get_logger().warn("emergency_stop received")
+    #     elif cmd == "capture_successed":
+    #         self.capture_authorized = True
+    #         if self.state == "WAIT_CAPTURE":
+    #             self.get_logger().info("capture authorized")
+    #             self.state = "ACTION"
+    #     elif cmd == "single_scan":
+    #         self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
+    #         self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
+    #         self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
+    #         self.get_logger().info(f"single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
+    #         self.state = "MANUAL_ACTION"
     def command_callback(self, msg):
-        cmd = msg.data
+        import json as _json
+        raw = msg.data
+        
+        # 1️⃣ 打印收到的最原始字符串（排查有没有真的收到）
+        self.get_logger().info(f"📥 [主控] 收到 command 话题数据: {raw}")
+        
+        try:
+            parsed = _json.loads(raw)
+        except Exception as e:
+            self.get_logger().error(f"❌ [主控] JSON 解析失败，按纯文本处理。错误: {e}")
+            cmd = raw
+            parsed = {}
+
+        # ==========================================
+        # 1. 尝试解析上位机发来的嵌套 JSON (nav_path 自动导航)
+        # ==========================================
+        payload = parsed.get("payload", {})
+        lidar_info = payload.get("lidar", {})
+        
+        if "command" in lidar_info:
+            cmd = lidar_info.get("command")
+            # 2️⃣ 打印解析出来的内部命令
+            self.get_logger().info(f"🔍 [主控] 解析出 lidar 指令: {cmd}")
+            
+            if cmd == "nav_path":
+                w = float(lidar_info.get("target_x", self.param_width))
+                h = float(lidar_info.get("target_y", self.param_height))
+                
+                # 自动单位转换：如果 push_accuracy < 10，当做米(m)转换为毫米(mm)
+                spacing_raw = float(lidar_info.get("push_accuracy", 0.08))
+                spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
+                
+                self.param_width = w
+                self.param_height = h
+                self.param_acc = spacing
+                
+                self.ig35_start_pulse = int(lidar_info.get("ig35_start", self.ig35_start_pulse))
+                self.ig35_end_pulse = int(lidar_info.get("ig35_end", self.ig35_end_pulse))
+                self.scan_speed = int(lidar_info.get("scan_speed", self.scan_speed))
+                
+                # 3️⃣ 打印即将开始规划的参数
+                self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 扫查速度={self.scan_speed}rpm")
+                
+                self.is_click_nav = False
+                
+                # 🌟 调用生成路径函数 (该函数内部会自动调用 self.publish_planned_path() 发布点位)
+                self.generate_path(w, h, self.param_acc)
+                
+                # 4️⃣ 打印规划结果，明确告诉您可以去哪个话题查看点位
+                point_count = len(self.targets)
+                self.get_logger().info(f"🗺️ [主控] 路径规划完成！共生成 {point_count} 个目标点。")
+                self.get_logger().info(f"📡 [主控] 目标点位已打包发布至 ROS 话题: /mission/planned_path")
+                
+                if self.targets:
+                    self.current_target_idx = 0 
+                    self.current_col_point_idx = 0 
+                    self.capture_authorized = False 
+                    self.col_start_initialized = False 
+                    self.prepare_next_target()
+                    self._send_agv_event("nav_started")
+                return 
+
+        # ==========================================
+        # 2. 兼容原有的简单扁平指令
+        # ==========================================
+        if isinstance(parsed, dict) and "command" not in lidar_info:
+            cmd = parsed.get("command", raw)
+
         if cmd == "emergency_stop":
             self.state = "IDLE"
-            self.get_logger().warn("🚨 收到紧急停止指令！")
+            self.get_logger().warn("🚨 emergency_stop received")
+            
         elif cmd == "capture_successed":
             self.capture_authorized = True
             if self.state == "WAIT_CAPTURE":
-                self.get_logger().info("✅ 收到授权！开始作业！")
+                self.get_logger().info("🔓 capture authorized")
                 self.state = "ACTION"
+                
         elif cmd == "single_scan":
+            self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
+            self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
+            self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
+            self.get_logger().info(f"🛠️ single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
             self.state = "MANUAL_ACTION"
-
     def nav_goal_callback(self, msg):
         self.param_width = msg.x
         self.param_height = msg.y
@@ -130,6 +231,57 @@ class MissionController(Node):
             self.capture_authorized = False 
             self.col_start_initialized = False 
             self.prepare_next_target()
+
+    def auto_cmd_callback(self, msg):
+        import json as _json
+        raw = msg.data
+        
+        try:
+            parsed = _json.loads(raw)
+        except Exception:
+            return  # 如果不是标准的 JSON，直接忽略
+            
+        # 🛡️ 过滤：如果是主控自己发布的底盘速度控制指令，或者是手柄发的指令，直接忽略
+        if "vx" in parsed or "wz" in parsed or "x" in parsed:
+            return
+
+        cmd = parsed.get("command", "")
+        
+        # 🎯 拦截到导航指令！
+        if cmd == "nav_path":
+            self.get_logger().info(f"📥 [主控] 从 /cmd_vel_auto 拦截到导航指令: {raw}")
+            
+            # 因为 C++ 是直接透传 data，所以直接从 parsed 提取即可
+            w = float(parsed.get("target_x", self.param_width))
+            h = float(parsed.get("target_y", self.param_height))
+            
+            # 单位转换：如果精度数字小于10，判断为米(m)，转为底层的毫米(mm)
+            spacing_raw = float(parsed.get("push_accuracy", 0.08))
+            spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
+            
+            self.param_width = w
+            self.param_height = h
+            self.param_acc = spacing
+            
+            self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
+            self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
+            self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
+            
+            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 扫查速度={self.scan_speed}rpm")
+            
+            self.is_click_nav = False
+            self.generate_path(w, h, self.param_acc)
+            
+            point_count = len(self.targets)
+            self.get_logger().info(f"🗺️ [主控] 路径规划完成！共生成 {point_count} 个目标点。发布至 /mission/planned_path")
+            
+            if self.targets:
+                self.current_target_idx = 0 
+                self.current_col_point_idx = 0 
+                self.capture_authorized = False 
+                self.col_start_initialized = False 
+                self.prepare_next_target()
+                self._send_agv_event("nav_started")
 
     def motor_cmd_callback(self, msg):
         motor_id = int(msg.x)
@@ -251,14 +403,14 @@ class MissionController(Node):
 
     def control_loop(self):
         if self.state == "MANUAL_ACTION":
-            self.cmd_pub.publish(Twist()); self.do_manual_action(); return
+            self.cmd_pub.publish(String(data=json.dumps({"vx":0,"wz":0}))); self.do_manual_action(); return
         if self.current_pose is None or not self.targets: return
         now_ts = self.get_clock().now()
         dt = max(1e-3, (now_ts - self.last_time).nanoseconds / 1e9)
         self.last_time = now_ts
-        if self.state == "WAIT_CAPTURE": self.cmd_pub.publish(Twist()); return
+        if self.state == "WAIT_CAPTURE": self.cmd_pub.publish(String(data=json.dumps({"vx":0,"wz":0}))); return
         if "NAV_" in self.state: self.do_navigation_fsm(dt)
-        elif self.state == "ACTION": self.cmd_pub.publish(Twist()); self.do_action()
+        elif self.state == "ACTION": self.cmd_pub.publish(String(data=json.dumps({"vx":0,"wz":0}))); self.do_action()
 
     def do_navigation_fsm(self, dt):
         tgt = self.targets[self.current_target_idx]
@@ -309,8 +461,9 @@ class MissionController(Node):
                 self.fine_align_start_time = 0.0
                 u_yaw = self.yaw_pid.step(yaw_err_final, dt)
 
-        cmd = Twist(); cmd.linear.x = float(np.clip(u_v / 500.0, -0.4, 0.4)); cmd.angular.z = float(np.clip(u_yaw / 500.0, -0.6, 0.6))
-        self.cmd_pub.publish(cmd)
+        vx_cmd = float(np.clip(u_v / 500.0, -0.4, 0.4))
+        wz_cmd = float(np.clip(u_yaw / 500.0, -0.6, 0.6))
+        self.cmd_pub.publish(String(data=json.dumps({"vx":vx_cmd,"wz":wz_cmd})))
 
     # ==========================================
     # 🌟 物理序列改用 Topic 下发，大脑彻底解放！
@@ -323,10 +476,12 @@ class MissionController(Node):
             
             if is_outward:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫出 (至 {self.ig35_start_pulse})...")
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed))
                 self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
                 time.sleep(3.0) 
             else:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫回 (至 {self.ig35_end_pulse})...")
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed))
                 self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
                 time.sleep(2.5)
 
@@ -339,30 +494,33 @@ class MissionController(Node):
             time.sleep(0.5)
         except Exception as e:
             self.get_logger().error(f"❌ 序列下发崩溃: {e}")
-
     def _execute_single_scan_sequence(self):
-        try:
-            self.get_logger().info("▶️ [单点测试] 下发 M1 下压...")
-            self.m1_pub.publish(Int32(data=300))
-            time.sleep(1.5)
-            
-            self.get_logger().info(f"▶️ [单点测试] 下发 横杆扫出...")
-            self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
-            time.sleep(3.0)
-            self.pushrod_pub.publish(Int32(data=500))
-            time.sleep(0.6)
-            
-            self.get_logger().info(f"◀️ [单点测试] 下发 横杆扫回...")
-            self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
-            time.sleep(2.5)
-            self.pushrod_pub.publish(Int32(data=500))
-            time.sleep(0.6)
-            
-            self.get_logger().info("◀️ [单点测试] 下发 M1 抬起...")
-            self.m1_pub.publish(Int32(data=0))
-            time.sleep(0.5)
-        except Exception as e:
-            self.get_logger().error(f"❌ 单次序列崩溃: {e}")
+            try:
+                self.get_logger().info("▶️ [单点测试] 下发 M1 下压...")
+                self.m1_pub.publish(Int32(data=300))
+                time.sleep(1.5)
+                
+                self.get_logger().info(f"▶️ [单点测试] 下发 横杆扫出...")
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                time.sleep(0.1) # 🌟 必须加延时！让底层有时间把速度设进去
+                self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
+                time.sleep(3.0)
+                self.pushrod_pub.publish(Int32(data=500))
+                time.sleep(0.6)
+                
+                self.get_logger().info(f"◀️ [单点测试] 下发 横杆扫回...")
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                time.sleep(0.1) # 🌟 必须加延时！
+                self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
+                time.sleep(2.5)
+                self.pushrod_pub.publish(Int32(data=500))
+                time.sleep(0.6)
+                
+                self.get_logger().info("◀️ [单点测试] 下发 M1 抬起...")
+                self.m1_pub.publish(Int32(data=0))
+                time.sleep(0.5)
+            except Exception as e:
+                self.get_logger().error(f"❌ 单次序列崩溃: {e}")
 
     def do_action(self):
         if self.is_click_nav:
@@ -409,6 +567,34 @@ class MissionController(Node):
         self.current_target_idx += 1
         self.prepare_next_target()
 
+
+    def params_callback(self, msg):
+        try:
+            raw = json.loads(msg.data)
+            if isinstance(raw, list) and len(raw) > 0:
+                item = raw[0]
+                target = item.get("target", "")
+                data = item.get("data", {})
+                cmd_type = data.get("command", "")
+                if cmd_type == "nav_start" and target == "agv":
+                    w = float(data.get("width", self.param_width))
+                    h = float(data.get("height", self.param_height))
+                    spacing = float(data.get("spacing", self.param_acc))
+                    self.param_width = w
+                    self.param_height = h
+                    self.param_acc = spacing
+                    self.is_click_nav = False
+                    self.get_logger().info(f"nav_start: w={w}, h={h}, spacing={spacing}")
+                    self.generate_path(w, h, spacing)
+                    if self.targets:
+                        self.current_target_idx = 0
+                        self.current_col_point_idx = 0
+                        self.capture_authorized = False
+                        self.col_start_initialized = False
+                        self.prepare_next_target()
+                        self._send_agv_event("nav_started")
+        except Exception as e:
+            self.get_logger().error(f"params_callback error: {e}")
 
     def do_manual_action(self):
         self._execute_single_scan_sequence()
