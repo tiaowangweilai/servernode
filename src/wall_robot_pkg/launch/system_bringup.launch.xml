@@ -1,0 +1,39 @@
+<launch>
+  <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
+    <arg name="align_depth.enable" value="true" />
+    <arg name="rgb_camera.color_profile" value="640x480x30" />
+    <arg name="depth_module.depth_profile" value="640x480x30" />
+  </include>
+
+  <include file="$(find-pkg-share rosbridge_server)/launch/rosbridge_websocket_launch.xml" />
+
+
+  <node pkg="web_video_server" exec="web_video_server" name="web_video_server">
+    <param name="port" value="8090" />
+  </node>
+
+  <node pkg="wall_robot_pkg" exec="sick_odom_node" name="sick_odom_node" output="screen" />
+
+
+  <node pkg="wall_robot_pkg" exec="server_node" name="server_node" output="screen" />
+
+  <node pkg="wall_robot_pkg" exec="mission_controller_node" name="mission_controller_node" output="screen" />
+
+  <node pkg="wall_robot_pkg" exec="chassis_driver_node" name="chassis_driver_node" output="screen" />
+
+  <node pkg="wall_robot_pkg" exec="mechanism_driver_node" name="mechanism_driver_node" output="screen" />
+
+
+  <node pkg="wall_robot_pkg" exec="image_resizer_node" name="image_resizer_node" output="screen" />
+
+  <node pkg="wall_robot_pkg" exec="vision_processor_node" name="vision_processor_node" output="screen">
+    <param name="fx" value="607.035" />
+    <param name="fy" value="607.062" />
+    <param name="cx" value="322.111" />
+    <param name="cy" value="240.756" />
+    <param name="cam_to_lidar_dx" value="0.2" />
+  </node>
+
+  <node pkg="wall_robot_pkg" exec="water_motor_test" name="water_motor_test" output="screen" />
+
+</launch>
