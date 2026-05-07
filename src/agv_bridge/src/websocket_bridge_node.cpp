@@ -12,7 +12,7 @@ namespace agv_bridge {
 class WebSocketBridgeNode : public rclcpp::Node {
 public:
     WebSocketBridgeNode() : Node("websocket_bridge_node") {
-        this->declare_parameter("server_uri", "ws://192.168.137.59:9100");
+        this->declare_parameter("server_uri", "ws://192.168.137.65:9100");
         this->declare_parameter("local_server_port", 9001);
         this->declare_parameter("robot_id", "vacuum_adsorption_robot");
 
