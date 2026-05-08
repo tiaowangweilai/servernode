@@ -4,4 +4,5 @@
 build/
 log/
 install/
+pyorbbecsdk/
 **/__pycache__/
