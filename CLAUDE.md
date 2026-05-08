@@ -77,7 +77,7 @@ Two comm paths from upper computer:
 Base: `DeviceHandler` → `init(node)`, `handleCommand()`, `isOnline()`, `getReport()`
 
 - **WallChassisHandler**: `/cmd_vel_manual` + `/mission/command` for `move`/`single_scan`
-- **AgvChassisHandler**: `cmd_vel` (Float64MultiArray) + `/mission/sys_command`
+- **AgvChassisHandler**: `cmd_vel` (Float64MultiArray) + `s/mission/sy_command`
 - **ArmHandler**: `cmd_arm_joint` + `cmd_arm_cartesian` for dual-arm joint/cartesian moves
 - **RadarHandler**: `/cmd_vel_auto` for nav path, heartbeat from `/odom`
 - **WallCameraHandler / AgvCameraHandler**: `image_pos` click → `/click_point`

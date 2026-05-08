@@ -120,8 +120,8 @@ class MissionController(Node):
         
         try:
             parsed = _json.loads(raw)
-        except Exception as e:
-            self.get_logger().error(f"❌ [主控] JSON 解析失败: {e}")
+        except Exception:
+            # pure string cmd, not JSON
             parsed = {}
 
         # ==========================================
@@ -199,6 +199,12 @@ class MissionController(Node):
             if self.state == "WAIT_CAPTURE":
                 self.get_logger().info("🔓 capture authorized")
                 self.state = "ACTION"
+
+        elif cmd == "save_successed":
+            self.get_logger().info("[主控] save confirmed by server")
+
+        elif cmd == "work_complete":
+            self.get_logger().info("[主控] work_complete confirmed by server")
                 
         elif cmd == "update_status":
             status = params.get("status", "unknown")

@@ -13,6 +13,8 @@
 #include <mutex>
 #include <cmath>
 #include <algorithm>
+#include <condition_variable>
+#include <chrono>
 
 namespace agv_bridge {
 
@@ -59,12 +61,45 @@ public:
         
         sub_ = node->create_subscription<std_msgs::msg::String>(
             "/chassis/serial_status", 10, [this](const std_msgs::msg::String::SharedPtr) { updateHeartbeat(); });
+
+        // 🌟 订阅任务事件：当主控发起作业请求时，我们需要转发给上位机
+        event_sub_ = node->create_subscription<std_msgs::msg::String>(
+            "/mission/events", 10, [this](const std_msgs::msg::String::SharedPtr msg) {
+                if (msg->data == "capture" || msg->data == "save" || msg->data == "work_complete") {
+                    std::lock_guard<std::mutex> lock(event_mutex_);
+                    Json::Value event_cmd;
+                    event_cmd["command"] = msg->data;
+                    pending_events_.push_back(event_cmd);
+                    RCLCPP_INFO(node_->get_logger(), "📥 捕获到 ROS 事件 [%s]，准备向本地/远程上位机申请授权...", msg->data.c_str());
+                }
+            });
     }
 
-    Json::Value handleCommand(const Json::Value& data, const agv_protocol::MessageHeader&) override {
+    std::vector<Json::Value> getPendingEvents() override {
+        std::lock_guard<std::mutex> lock(event_mutex_);
+        auto events = std::move(pending_events_);
+        pending_events_.clear();
+        return events;
+    }
+
+    Json::Value handleCommand(const Json::Value& data, const agv_protocol::MessageHeader& header) override {
         Json::Value res;
         std::string cmd = data["command"].asString();
         
+        // 🌟 处理上位机的回复 (Response)
+        if (header.msg_type == "response") {
+            if (data.isMember("result")) {
+                std::string result = data["result"].asString();
+                RCLCPP_INFO(node_->get_logger(), "📤 收到上位机对 [%s] 的响应: %s", cmd.c_str(), result.c_str());
+                
+                // 如果上位机确认成功，我们将确认信号发布回 ROS
+                auto msg = std_msgs::msg::String();
+                msg.data = result; // 例如 "capture_successed"
+                sys_pub_->publish(msg);
+            }
+            return Json::Value(); // 回复包不需要再回复
+        }
+
         if (cmd == "move") {
             const auto& p = data.isMember("parameters") ? data["parameters"] : data["data"];
             auto msg = geometry_msgs::msg::Twist();
@@ -89,22 +124,17 @@ public:
             sys_pub_->publish(msg);
             res["result"] = "single_scan_successed";
         }
-        else if (cmd == "capture_successed") {
-            Json::Value cmd_json;
-            cmd_json["command"] = "capture_successed";
-            auto msg = std_msgs::msg::String();
-            Json::StreamWriterBuilder writer;
-            msg.data = Json::writeString(writer, cmd_json);
-            sys_pub_->publish(msg);
-            res["result"] = "yes";
-        }
         else if (cmd == "capture" || cmd == "save" || cmd == "work_complete") {
-            // 🌟 将指令结果下发给主控节点 (mission_controller)
             auto msg = std_msgs::msg::String();
-            msg.data = cmd + "_successed"; // 比如 "capture_successed"
+            msg.data = cmd;
             sys_pub_->publish(msg);
-        
             res["result"] = msg.data;
+        }
+        else if (cmd == "capture_successed" || cmd == "save_successed" || cmd == "work_complete") {
+            auto msg = std_msgs::msg::String();
+            msg.data = cmd;
+            sys_pub_->publish(msg);
+            res["result"] = "ok";
         }
 
         else {
@@ -117,6 +147,11 @@ public:
 private:
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr manual_pub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
+    
+    // 🌟 异步确认机制
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr event_sub_;
+    std::vector<Json::Value> pending_events_;
+    std::mutex event_mutex_;
 };
 
 /**
@@ -294,7 +329,7 @@ private:
 
 class BaseRadarHandler : public BaseHandler {
 public:
-    bool isOnline() override { return true; } // 🌟 强行在线
+    bool isOnline() override { return true; }
     void init(rclcpp::Node* node) override {
         node_ = node;
         auto_pub_ = node->create_publisher<std_msgs::msg::String>("/cmd_vel_auto", 10);

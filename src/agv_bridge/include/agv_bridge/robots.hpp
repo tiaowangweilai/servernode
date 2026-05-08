@@ -115,7 +115,7 @@ public:
                     }
                     Json::Value path_payload;
                     path_payload["lidar"] = path_report;
-                    reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                    reports.push_back(parser.buildRawMessage("agv", "response", path_payload));
                 }
             }
         }

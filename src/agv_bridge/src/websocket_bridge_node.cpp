@@ -37,19 +37,6 @@ public:
         report_timer_ = this->create_wall_timer(
             std::chrono::milliseconds(200), std::bind(&WebSocketBridgeNode::sendPeriodicReport, this));
 
-        // 🌟 订阅 /mission/events 将 capture/save/work_complete 事件转发到上位机
-        events_sub_ = this->create_subscription<std_msgs::msg::String>(
-            "/mission/events", 10, [this](const std_msgs::msg::String::SharedPtr msg) {
-                if (!launched_ || !robot_) return;
-                Json::Value payload;
-                Json::Value agv_payload;
-                agv_payload["event"] = msg->data;
-                payload["agv"] = agv_payload;
-                std::string event_msg = parser_.buildRawMessage(robot_->getRobotId(), "event", payload);
-                ws_client_->send(event_msg);
-                RCLCPP_INFO(this->get_logger(), "转发事件至上位机: %s", event_msg.c_str());
-            });
-
         RCLCPP_INFO(this->get_logger(), "模块化架构 WebSocket 桥接节点已启动。");
     }
 
@@ -65,11 +52,17 @@ public:
 
 private:
     void sendPeriodicReport() {
-        // if (!launched_ || !robot_) return;
         if (!robot_) return;
-        // 通过 Robot 对象生成报告，支持多条消息并行发送
+
+        // 1. 发送周期性状态报告 (status_update)
         auto reports = robot_->generateReports(parser_);
         for (const auto& msg : reports) {
+            ws_client_->send(msg);
+        }
+
+        // 2. 🌟 发送异步触发的指令 (command)
+        auto events = robot_->generateEvents(parser_);
+        for (const auto& msg : events) {
             ws_client_->send(msg);
         }
     }
@@ -130,7 +123,6 @@ private:
     // 核心：使用抽象接口
     Robot::Ptr robot_;
     
-    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr events_sub_;
     rclcpp::TimerBase::SharedPtr report_timer_;
     bool launched_ = false;
 };

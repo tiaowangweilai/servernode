@@ -32,6 +32,11 @@ public:
         return Json::Value(Json::objectValue);
     }
 
+    // 🌟 新增：获取待发送的异步事件 (将作为 "command" 发送)
+    virtual std::vector<Json::Value> getPendingEvents() {
+        return {};
+    }
+
     // 获取多个实时状态报告。默认兼容单报告处理器。
     virtual std::vector<Json::Value> getReports() {
         Json::Value report = getReport();

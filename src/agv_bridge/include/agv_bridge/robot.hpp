@@ -33,6 +33,9 @@ public:
     // 生成周期性状态报告（支持多条消息，如复合机器人机械臂的分开上报）
     virtual std::vector<std::string> generateReports(agv_protocol::CommandParser& parser) = 0;
 
+    // 🌟 新增：生成主动发送给上位机的异步指令消息 (msg_type: "command")
+    virtual std::vector<std::string> generateEvents(agv_protocol::CommandParser& parser) = 0;
+
     virtual std::string getRobotId() const = 0;
 };
 
@@ -86,6 +89,20 @@ public:
 
         if (payload.empty()) return {};
         return { parser.buildRawMessage(robot_id_, "status_update", payload) };
+    }
+
+    std::vector<std::string> generateEvents(agv_protocol::CommandParser& parser) override {
+        std::vector<std::string> event_msgs;
+        for (auto const& [name, handler] : handlers_) {
+            auto events = handler->getPendingEvents();
+            for (const auto& ev : events) {
+                Json::Value payload;
+                payload[name] = ev;
+                // 注意：这里 msg_type 为 "command"
+                event_msgs.push_back(parser.buildRawMessage(robot_id_, "command", payload));
+            }
+        }
+        return event_msgs;
     }
 
     std::string getRobotId() const override { return robot_id_; }
