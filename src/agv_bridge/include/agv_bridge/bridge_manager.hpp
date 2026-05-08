@@ -40,7 +40,7 @@ private:
     // 订阅者 (新增)
     rclcpp::Subscription<std_msgs::msg::Header>::SharedPtr radar_sub_;
     rclcpp::Subscription<std_msgs::msg::Header>::SharedPtr camera_sub_;
-    
+
     // 状态数据 (新增)
     rclcpp::Time last_radar_time_{0, 0, RCL_ROS_TIME};
     rclcpp::Time last_camera_time_{0, 0, RCL_ROS_TIME};

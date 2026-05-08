@@ -5,6 +5,7 @@
 #include "agv_protocol/command_parser.hpp"
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace agv_bridge {
 
@@ -25,6 +26,20 @@ public:
 
     // 状态检查：处理 msg_type 为 "check" 时的在线/离线检测逻辑
     virtual bool isOnline() = 0;
+
+    // 获取实时状态报告 (周期性回传)
+    virtual Json::Value getReport() {
+        return Json::Value(Json::objectValue);
+    }
+
+    // 获取多个实时状态报告。默认兼容单报告处理器。
+    virtual std::vector<Json::Value> getReports() {
+        Json::Value report = getReport();
+        if (report.empty()) {
+            return {};
+        }
+        return {report};
+    }
 };
 
 } // namespace agv_bridge

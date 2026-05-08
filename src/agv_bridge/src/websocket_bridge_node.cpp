@@ -2,29 +2,25 @@
 #include "agv_protocol/websocket_client.hpp"
 #include "agv_protocol/websocket_server.hpp"
 #include "agv_protocol/command_parser.hpp"
-#include "agv_bridge/device_handler.hpp"
-
-// 临时引入刚才定义的 Handler 实现 (实际工程建议拆分为独立头文件)
-#include "handlers.cpp" 
+#include "agv_bridge/robots.hpp"
 
 namespace agv_bridge {
 
+/**
+ * @brief WebSocket 桥接节点 - 优化后的架构
+ * 
+ * 核心优化：
+ * 1. 使用 Robot 抽象类封装不同机器人的差异逻辑 (启动命令、状态报告等)
+ * 2. 使用 DeviceHandler 封装不同设备的底层操作 (指令解析、话题订阅等)
+ * 3. 节点本身只负责数据传输和协议分发，不包含具体业务逻辑
+ */
 class WebSocketBridgeNode : public rclcpp::Node {
 public:
     WebSocketBridgeNode() : Node("websocket_bridge_node") {
         this->declare_parameter("server_uri", "ws://192.168.137.65:9100");
         this->declare_parameter("local_server_port", 9001);
-        this->declare_parameter("robot_id", "vacuum_adsorption_robot");
 
-        // 1. 注册设备处理器 (以后加新设备，只需要加一行 registerHandler)
-        registerHandler("agv", std::make_shared<ChassisHandler>());
-        registerHandler("chassis", handlers_["agv"]); 
-        registerHandler("arms", std::make_shared<ArmHandler>());
-        registerHandler("radar", std::make_shared<RadarHandler>());
-        registerHandler("lidar", handlers_["radar"]); 
-        registerHandler("camera", std::make_shared<CameraHandler>());
-
-        // 2. 初始化 WebSocket
+        // ... 初始化 WebSocket ...
         std::string server_uri = this->get_parameter("server_uri").as_string();
         int local_port = this->get_parameter("local_server_port").as_int();
         ws_client_ = std::make_unique<agv_protocol::WebSocketClientWrapper>(server_uri, 2000);
@@ -34,28 +30,19 @@ public:
         ws_client_->setMessageHandler(cmd_handler);
         ws_server_->setMessageHandler(cmd_handler);
 
-        // 上位机连接成功后自动启动所有子节点
-        auto conn_handler = [this](bool connected) {
-            if (connected) {
-                std::string robot_id = this->get_parameter("robot_id").as_string();
-                startLaunch(robot_id);
-            }
-        };
-        ws_client_->setConnectionHandler(conn_handler);
-
-        // 系统命令发布者（转发到 mission_controller）
-        sys_pub_ = this->create_publisher<std_msgs::msg::String>("/mission/command", 10);
-
         ws_client_->start();
         ws_server_->start();
 
-        RCLCPP_INFO(this->get_logger(), "动态分发架构 WebSocket 桥接节点已启动。");
+        // 🌟 开启状态回传定时器 (5Hz)
+        report_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(200), std::bind(&WebSocketBridgeNode::sendPeriodicReport, this));
+
+        RCLCPP_INFO(this->get_logger(), "模块化架构 WebSocket 桥接节点已启动。");
     }
 
     ~WebSocketBridgeNode() {
         if (launched_) {
             RCLCPP_INFO(this->get_logger(), "正在一键关闭机器人硬件系统...");
-            // 使用变量接收返回值并强制转换为 void，以消除 warn_unused_result 警告
             int ret = 0;
             ret = std::system("pkill -9 -f agv_bringup");
             ret = std::system("pkill -9 -f wall_robot_pkg");
@@ -64,26 +51,30 @@ public:
     }
 
 private:
-    void startLaunch(const std::string& robot_id) {
-        if (launched_) return;
+    void sendPeriodicReport() {
+        if (!launched_ || !robot_) return;
 
-        std::string cmd;
-        if (robot_id == "vacuum_adsorption_robot") {
-            cmd = "ros2 launch wall_robot_pkg system_bringup.launch.py &";
-        } else {
-            // 默认为双臂机器人
-            cmd = "ros2 launch agv_bringup agv.launch.xml &";
-        }
-
-        RCLCPP_INFO(this->get_logger(), "正在根据自检信号启动系统: %s", cmd.c_str());
-        if (std::system(cmd.c_str()) == 0) {
-            launched_ = true;
+        // 通过 Robot 对象生成报告，支持多条消息并行发送
+        auto reports = robot_->generateReports(parser_);
+        for (const auto& msg : reports) {
+            ws_client_->send(msg);
         }
     }
 
-    void registerHandler(const std::string& key, DeviceHandler::Ptr handler) {
-        handler->init(this);
-        handlers_[key] = handler;
+    void startLaunch(const std::string& robot_id) {
+        if (launched_) return;
+
+        // 1. 根据 ID 创建对应的机器人实例
+        robot_ = RobotFactory::createRobot(robot_id);
+        robot_->init(this);
+
+        // 2. 获取并执行启动命令
+        std::string cmd = robot_->getLaunchCommand();
+        RCLCPP_INFO(this->get_logger(), "正在根据机器人类型 [%s] 启动系统: %s", robot_id.c_str(), cmd.c_str());
+        
+        if (std::system(cmd.c_str()) == 0) {
+            launched_ = true;
+        }
     }
 
     void handleCommand(const std::string& json_str) {
@@ -95,44 +86,25 @@ private:
             return;
         }
         const auto& raw_msg = *raw_opt;
+        const std::string& robot_id = raw_msg.header.robot_id;
 
         Json::Value response_payload;
 
-        // --- 逻辑分发 ---
         if (raw_msg.header.msg_type == "check") {
-            for (const auto& key : raw_msg.payload.getMemberNames()) {
-                if (handlers_.count(key)) {
-                    Json::Value dev_res;
-                    dev_res["command"] = raw_msg.payload[key]["command"].asString();
-                    dev_res["result"] = handlers_[key]->isOnline() ? "yes" : "no";
-                    response_payload[key] = dev_res;
-                }
+            startLaunch(robot_id);
+            if (robot_) {
+                response_payload = robot_->handleCheck(raw_msg);
             }
-        } else if (raw_msg.header.msg_type == "update_status") {
-            for (const auto& key : raw_msg.payload.getMemberNames()) {
-                Json::Value cmd_json;
-                cmd_json["command"] = "update_status";
-                cmd_json["status"] = raw_msg.payload[key]["status"];
-                cmd_json["source_key"] = key;
-                auto msg = std_msgs::msg::String();
-                Json::StreamWriterBuilder w;
-                msg.data = Json::writeString(w, cmd_json);
-                sys_pub_->publish(msg);
-                RCLCPP_INFO(this->get_logger(), "update status %s %s", key.c_str(), raw_msg.payload[key]["status"].asString().c_str());
-            }
-            response_payload["ack"] = "ok";
         } else {
-            // 根据 Payload 里的 Key 自动找到对应的 Handler 处理
-            for (const auto& key : raw_msg.payload.getMemberNames()) {
-                if (handlers_.count(key)) {
-                    response_payload[key] = handlers_[key]->handleCommand(raw_msg.payload[key], raw_msg.header);
-                }
+            if (robot_) {
+                response_payload = robot_->handleCommand(raw_msg);
+            } else {
+                RCLCPP_WARN(this->get_logger(), "收到指令但机器人尚未初始化 (未收到 check)!");
             }
         }
 
-        // --- 发送响应 ---
         if (!response_payload.empty()) {
-            std::string resp = parser_.buildRawMessage(raw_msg.header.robot_id, "response", response_payload);
+            std::string resp = parser_.buildRawMessage(robot_id, "response", response_payload);
             RCLCPP_INFO(this->get_logger(), "回复上位机: %s", resp.c_str());
             ws_client_->send(resp);
         }
@@ -141,8 +113,11 @@ private:
     agv_protocol::CommandParser parser_;
     std::unique_ptr<agv_protocol::WebSocketClientWrapper> ws_client_;
     std::unique_ptr<agv_protocol::WebSocketServerWrapper> ws_server_;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr sys_pub_;
-    std::map<std::string, DeviceHandler::Ptr> handlers_;
+    
+    // 核心：使用抽象接口
+    Robot::Ptr robot_;
+    
+    rclcpp::TimerBase::SharedPtr report_timer_;
     bool launched_ = false;
 };
 

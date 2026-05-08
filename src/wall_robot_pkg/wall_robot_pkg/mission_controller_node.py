@@ -111,31 +111,8 @@ class MissionController(Node):
         
         self.get_logger().info(">>> 主控节点就绪 (✅ 大脑已解耦，不含任何阻塞型硬件驱动代码)")
 
-    # def command_callback(self, msg):
-    #     import json as _json
-    #     raw = msg.data
-    #     try:
-    #         parsed = _json.loads(raw)
-    #         cmd = parsed.get("command", raw)
-    #     except Exception:
-    #         cmd = raw
-    #         parsed = {}
 
-    #     if cmd == "emergency_stop":
-    #         self.state = "IDLE"
-    #         self.get_logger().warn("emergency_stop received")
-    #     elif cmd == "capture_successed":
-    #         self.capture_authorized = True
-    #         if self.state == "WAIT_CAPTURE":
-    #             self.get_logger().info("capture authorized")
-    #             self.state = "ACTION"
-    #     elif cmd == "single_scan":
-    #         self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
-    #         self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
-    #         self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
-    #         self.get_logger().info(f"single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
-    #         self.state = "MANUAL_ACTION"
-    def command_callback(self, msg):
+    # def command_callback(self, msg):
         import json as _json
         raw = msg.data
         
@@ -222,6 +199,99 @@ class MissionController(Node):
         elif cmd == "update_status":
             status = parsed.get("status", "unknown")
             source = parsed.get("source_key", "unknown")
+            self.get_logger().info(f"闸门状态更新: [{source}] status={status}")
+    def command_callback(self, msg):
+        import json as _json
+        raw = msg.data
+        
+        # 1️⃣ 打印收到的最原始字符串
+        self.get_logger().info(f"📥 [主控] 收到 command 话题数据: {raw}")
+        
+        try:
+            parsed = _json.loads(raw)
+        except Exception as e:
+            self.get_logger().error(f"❌ [主控] JSON 解析失败: {e}")
+            parsed = {}
+
+        # ==========================================
+        # 🌟 智能提取指令引擎：自动穿透 payload, lidar 或 agv
+        # ==========================================
+        cmd = ""
+        params = {} # 统一把参数提取到这个字典里
+        
+        payload = parsed.get("payload", {})
+        if "lidar" in payload and "command" in payload["lidar"]:
+            cmd = payload["lidar"].get("command")
+            params = payload["lidar"]
+        elif "agv" in payload and "command" in payload["agv"]:
+            cmd = payload["agv"].get("command")
+            params = payload["agv"]
+        elif "command" in parsed:
+            cmd = parsed.get("command")
+            params = parsed
+        else:
+            cmd = raw
+            params = parsed
+
+        if cmd and cmd != raw:
+            self.get_logger().info(f"🔍 [主控] 智能提取到指令: {cmd}")
+
+        # ==========================================
+        # 执行指令分支
+        # ==========================================
+        if cmd == "nav_path":
+            w = float(params.get("target_x", self.param_width))
+            h = float(params.get("target_y", self.param_height))
+            
+            spacing_raw = float(params.get("push_accuracy", 0.08))
+            spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
+            
+            self.param_width = w
+            self.param_height = h
+            self.param_acc = spacing
+            
+            self.ig35_start_pulse = int(params.get("ig35_start", self.ig35_start_pulse))
+            self.ig35_end_pulse = int(params.get("ig35_end", self.ig35_end_pulse))
+            self.scan_speed = int(params.get("scan_speed", self.scan_speed))
+            
+            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 速度={self.scan_speed}rpm")
+            
+            self.is_click_nav = False
+            self.generate_path(w, h, self.param_acc)
+            
+            self.get_logger().info(f"🗺️ [主控] 路径规划完成！共生成 {len(self.targets)} 个目标点。发布至 /mission/planned_path")
+            
+            if self.targets:
+                self.current_target_idx = 0 
+                self.current_col_point_idx = 0 
+                self.capture_authorized = False 
+                self.col_start_initialized = False 
+                self.prepare_next_target()
+                self._send_agv_event("nav_started")
+
+        elif cmd == "single_scan":
+            self.ig35_start_pulse = int(params.get("ig35_start", self.ig35_start_pulse))
+            self.ig35_end_pulse = int(params.get("ig35_end", self.ig35_end_pulse))
+            self.scan_speed = int(params.get("scan_speed", self.scan_speed))
+            
+            self.get_logger().info(f"🛠️ [主控] 触发 single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
+            
+            # 强制切入手动测试模式，交接给 control_loop 执行
+            self.state = "MANUAL_ACTION"
+
+        elif cmd == "emergency_stop":
+            self.state = "IDLE"
+            self.get_logger().warn("🚨 emergency_stop received")
+            
+        elif cmd == "capture_successed":
+            self.capture_authorized = True
+            if self.state == "WAIT_CAPTURE":
+                self.get_logger().info("🔓 capture authorized")
+                self.state = "ACTION"
+                
+        elif cmd == "update_status":
+            status = params.get("status", "unknown")
+            source = params.get("source_key", "unknown")
             self.get_logger().info(f"闸门状态更新: [{source}] status={status}")
     def nav_goal_callback(self, msg):
         self.param_width = msg.x
