@@ -72,9 +72,9 @@ class MJPEGServerNode(Node):
         self.skip_every = 4  # 30fps -> 7.5fps
 
         self.httpd = ThreadingHTTPServer(("0.0.0.0", 5000), MJPEGHandler)
-        self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)   
         self.http_thread.start()
-        self.get_logger().info("MJPEG server: http://0.0.0.0:5000/video_feed (pre-compressed, 15fps)")
+        self.get_logger().info("MJPEG server: http://0.0.0.0:5000/video_feed (pre-compressed, 7.5fps)")
 
     def image_callback(self, msg):
         self.frame_count += 1

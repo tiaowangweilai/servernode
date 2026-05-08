@@ -66,7 +66,7 @@ class MissionController(Node):
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.manual_sub = self.create_subscription(Twist, '/cmd_vel_manual', self.manual_override_check, 10)
         
-        self.cmd_sub = self.create_subscription(String, '/mission/command', self.command_callback, 10)
+        self.cmd_sub = self.create_subscription(String, '/mission/sys_command', self.command_callback, 10)
         self.auto_cmd_sub = self.create_subscription(String, '/cmd_vel_auto', self.auto_cmd_callback, 10)
         self.nav_goal_sub = self.create_subscription(Point, '/mission/nav_goal', self.nav_goal_callback, 10)
         self.motor_cmd_sub = self.create_subscription(Point, '/mission/motor_cmd', self.motor_cmd_callback, 10)
@@ -106,100 +106,11 @@ class MissionController(Node):
         self.ig35_end_pulse = 0
         self.scan_speed = 20
 
-        self.generate_path(self.param_width, self.param_height, self.param_acc)
         self.timer = self.create_timer(1.0/self.control_freq, self.control_loop)
         
         self.get_logger().info(">>> 主控节点就绪 (✅ 大脑已解耦，不含任何阻塞型硬件驱动代码)")
 
 
-    # def command_callback(self, msg):
-        import json as _json
-        raw = msg.data
-        
-        # 1️⃣ 打印收到的最原始字符串（排查有没有真的收到）
-        self.get_logger().info(f"📥 [主控] 收到 command 话题数据: {raw}")
-        
-        try:
-            parsed = _json.loads(raw)
-        except Exception as e:
-            self.get_logger().error(f"❌ [主控] JSON 解析失败，按纯文本处理。错误: {e}")
-            cmd = raw
-            parsed = {}
-
-        # ==========================================
-        # 1. 尝试解析上位机发来的嵌套 JSON (nav_path 自动导航)
-        # ==========================================
-        payload = parsed.get("payload", {})
-        lidar_info = payload.get("lidar", {})
-        
-        if "command" in lidar_info:
-            cmd = lidar_info.get("command")
-            # 2️⃣ 打印解析出来的内部命令
-            self.get_logger().info(f"🔍 [主控] 解析出 lidar 指令: {cmd}")
-            
-            if cmd == "nav_path":
-                w = float(lidar_info.get("target_x", self.param_width))
-                h = float(lidar_info.get("target_y", self.param_height))
-                
-                # 自动单位转换：如果 push_accuracy < 10，当做米(m)转换为毫米(mm)
-                spacing_raw = float(lidar_info.get("push_accuracy", 0.08))
-                spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
-                
-                self.param_width = w
-                self.param_height = h
-                self.param_acc = spacing
-                
-                self.ig35_start_pulse = int(lidar_info.get("ig35_start", self.ig35_start_pulse))
-                self.ig35_end_pulse = int(lidar_info.get("ig35_end", self.ig35_end_pulse))
-                self.scan_speed = int(lidar_info.get("scan_speed", self.scan_speed))
-                
-                # 3️⃣ 打印即将开始规划的参数
-                self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 扫查速度={self.scan_speed}rpm")
-                
-                self.is_click_nav = False
-                
-                # 🌟 调用生成路径函数 (该函数内部会自动调用 self.publish_planned_path() 发布点位)
-                self.generate_path(w, h, self.param_acc)
-                
-                # 4️⃣ 打印规划结果，明确告诉您可以去哪个话题查看点位
-                point_count = len(self.targets)
-                self.get_logger().info(f"🗺️ [主控] 路径规划完成！共生成 {point_count} 个目标点。")
-                self.get_logger().info(f"📡 [主控] 目标点位已打包发布至 ROS 话题: /mission/planned_path")
-                
-                if self.targets:
-                    self.current_target_idx = 0 
-                    self.current_col_point_idx = 0 
-                    self.capture_authorized = False 
-                    self.col_start_initialized = False 
-                    self.prepare_next_target()
-                    self._send_agv_event("nav_started")
-                return 
-
-        # ==========================================
-        # 2. 兼容原有的简单扁平指令
-        # ==========================================
-        if isinstance(parsed, dict) and "command" not in lidar_info:
-            cmd = parsed.get("command", raw)
-
-        if cmd == "emergency_stop":
-            self.state = "IDLE"
-            self.get_logger().warn("🚨 emergency_stop received")
-            
-        elif cmd == "capture_successed":
-            self.capture_authorized = True
-            if self.state == "WAIT_CAPTURE":
-                self.get_logger().info("🔓 capture authorized")
-                self.state = "ACTION"
-                
-        elif cmd == "single_scan":
-            self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
-            self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
-            self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
-            self.get_logger().info(f"🛠️ single_scan: start={self.ig35_start_pulse} end={self.ig35_end_pulse} speed={self.scan_speed}")
-        elif cmd == "update_status":
-            status = parsed.get("status", "unknown")
-            source = parsed.get("source_key", "unknown")
-            self.get_logger().info(f"闸门状态更新: [{source}] status={status}")
     def command_callback(self, msg):
         import json as _json
         raw = msg.data
@@ -297,7 +208,6 @@ class MissionController(Node):
         self.param_width = msg.x
         self.param_height = msg.y
         self.is_click_nav = False
-        self.generate_path(self.param_width, self.param_height, self.param_acc)
         if self.targets:
             self.current_target_idx = 0 
             self.current_col_point_idx = 0 
@@ -405,7 +315,9 @@ class MissionController(Node):
         self.prepare_next_target()
 
     def manual_override_check(self, msg):
-        if self.state != "IDLE": self.state = "IDLE" 
+        if self.state != "IDLE":
+            self.get_logger().warn(f"🚨 [主控] 手动干预，状态 {self.state} -> IDLE")
+            self.state = "IDLE" 
 
     def prepare_next_target(self):
         if self.current_target_idx >= len(self.targets):

@@ -11,6 +11,8 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <mutex>
+#include <cmath>
+#include <algorithm>
 
 namespace agv_bridge {
 
@@ -53,7 +55,7 @@ public:
     void init(rclcpp::Node* node) override {
         node_ = node;
         manual_pub_ = node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_manual", 10);
-        sys_pub_ = node->create_publisher<std_msgs::msg::String>("/mission/command", 10);
+        sys_pub_ = node->create_publisher<std_msgs::msg::String>("/mission/sys_command", 10);
         
         sub_ = node->create_subscription<std_msgs::msg::String>(
             "/chassis/serial_status", 10, [this](const std_msgs::msg::String::SharedPtr) { updateHeartbeat(); });
@@ -85,8 +87,26 @@ public:
             Json::StreamWriterBuilder writer;
             msg.data = Json::writeString(writer, cmd_json);
             sys_pub_->publish(msg);
+            res["result"] = "single_scan_successed";
+        }
+        else if (cmd == "capture_successed") {
+            Json::Value cmd_json;
+            cmd_json["command"] = "capture_successed";
+            auto msg = std_msgs::msg::String();
+            Json::StreamWriterBuilder writer;
+            msg.data = Json::writeString(writer, cmd_json);
+            sys_pub_->publish(msg);
             res["result"] = "yes";
         }
+        else if (cmd == "capture" || cmd == "save" || cmd == "work_complete") {
+            // 🌟 将指令结果下发给主控节点 (mission_controller)
+            auto msg = std_msgs::msg::String();
+            msg.data = cmd + "_successed"; // 比如 "capture_successed"
+            sys_pub_->publish(msg);
+        
+            res["result"] = msg.data;
+        }
+
         else {
             res["result"] = cmd + "_successed";
         }
@@ -274,6 +294,7 @@ private:
 
 class BaseRadarHandler : public BaseHandler {
 public:
+    bool isOnline() override { return true; } // 🌟 强行在线
     void init(rclcpp::Node* node) override {
         node_ = node;
         auto_pub_ = node->create_publisher<std_msgs::msg::String>("/cmd_vel_auto", 10);
@@ -283,7 +304,40 @@ public:
             "/mission/planned_path", 10, 
             [this](const nav_msgs::msg::Path::SharedPtr msg) {
                 RCLCPP_INFO(node_->get_logger(), "📍 [ServerNode] 成功捕获主控下发的规划路径！点数: %zu", msg->poses.size());
+                std::lock_guard<std::mutex> lock(path_mutex_);
+                last_path_ = msg;
+                new_path_available_ = true;
             });
+    }
+
+    Json::Value getPathReport() {
+        std::lock_guard<std::mutex> lock(path_mutex_);
+        if (!new_path_available_ || !last_path_) return Json::Value();
+        
+        Json::Value lidar;
+        lidar["command"] = "nav_path";
+        Json::Value path_array(Json::arrayValue);
+        
+        for (size_t i = 0; i < last_path_->poses.size(); ++i) {
+            const auto& pose = last_path_->poses[i].pose;
+            Json::Value p;
+            p["x"] = pose.position.x;
+            p["y"] = pose.position.y;
+            
+            // 四元数转偏航角 (简单 2D 情况)
+            double qz = pose.orientation.z;
+            double qw = pose.orientation.w;
+            double theta = 2.0 * std::atan2(qz, qw);
+            p["theta"] = theta;
+            
+            // 默认类型逻辑：最后一个点为 target，其余为 normal
+            p["type"] = (i == last_path_->poses.size() - 1) ? "target" : "normal";
+            path_array.append(p);
+        }
+        
+        lidar["path"] = path_array;
+        new_path_available_ = false;
+        return lidar;
     }
 
     Json::Value getReport() override {
@@ -320,6 +374,11 @@ protected:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
     nav_msgs::msg::Odometry::SharedPtr last_odom_;
+    
+    // 🌟 新增：路径缓存
+    nav_msgs::msg::Path::SharedPtr last_path_;
+    bool new_path_available_ = false;
+    std::mutex path_mutex_;
 };
 
 class RadarHandler : public BaseRadarHandler {

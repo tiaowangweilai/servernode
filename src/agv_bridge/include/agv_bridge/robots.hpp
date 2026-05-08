@@ -34,6 +34,23 @@ public:
     std::vector<std::string> generateReports(agv_protocol::CommandParser& parser) override {
         std::vector<std::string> reports;
         
+        // 🌟 新增：路径上报 (msg_type: response)
+        if (handlers_.count("radar")) {
+            auto radar_ptr = std::dynamic_pointer_cast<BaseRadarHandler>(handlers_["radar"]);
+            if (radar_ptr) {
+                Json::Value path_report = radar_ptr->getPathReport();
+                if (!path_report.empty()) {
+                    Json::Value path_payload;
+                    path_payload["lidar"] = path_report;
+                    // 打印 path_report 的内容
+                    std::cout << "--- Radar Path Report ---" << std::endl;
+                    std::cout << path_report.toStyledString() << std::endl; 
+                    std::cout << "-------------------------" << std::endl;
+                    reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                }
+            }
+        }
+
         if (handlers_.count("arms")) {
             for (const auto& arm_report : handlers_["arms"]->getReports()) {
                 if (arm_report.empty()) continue;
@@ -83,6 +100,26 @@ public:
     }
 
     std::vector<std::string> generateReports(agv_protocol::CommandParser& parser) override {
+        std::vector<std::string> reports;
+
+        // 路径上报 (msg_type: response)
+        if (handlers_.count("radar")) {
+            auto radar_ptr = std::dynamic_pointer_cast<BaseRadarHandler>(handlers_["radar"]);
+            if (radar_ptr) {
+                Json::Value path_report = radar_ptr->getPathReport();
+                if (!path_report.empty()) {
+                    RCLCPP_INFO(node_->get_logger(), "🚀 [上报] 即将向上位机发送规划路径, 点数=%d", path_report["path"].size());
+                    for (int i = 0; i < (int)path_report["path"].size() && i < 3; i++) {
+                        const auto& p = path_report["path"][i];
+                        RCLCPP_INFO(node_->get_logger(), "  点%d: x=%.3f y=%.3f theta=%.1f type=%s", i, p["x"].asDouble(), p["y"].asDouble(), p["theta"].asDouble(), p["type"].asCString());
+                    }
+                    Json::Value path_payload;
+                    path_payload["lidar"] = path_report;
+                    reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                }
+            }
+        }
+
         Json::Value payload;
         // 气吸附机器人上报底盘和雷达状态
         if (handlers_.count("chassis")) {
@@ -92,8 +129,11 @@ public:
             payload["lidar"] = handlers_["lidar"]->getReport();
         }
         
-        if (payload.empty()) return {};
-        return { parser.buildRawMessage(robot_id_, "status_update", payload) };
+        if (!payload.empty()) {
+            reports.push_back(parser.buildRawMessage(robot_id_, "status_update", payload));
+        }
+
+        return reports;
     }
 };
 

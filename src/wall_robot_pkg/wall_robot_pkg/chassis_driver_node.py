@@ -71,6 +71,7 @@ class ChassisDriverNode(Node):
                 self.get_logger().warn(f"🚨 找不到设备 {self.port}", throttle_duration_sec=5.0)
 
     def manual_callback(self, msg):
+        self.get_logger().info(f"🛑 [底盘] 收到手动指令: vx={msg.linear.x:.2f} vy={msg.linear.y:.2f} wz={msg.angular.z:.2f}")
         self.last_manual_ts = self.get_clock().now().nanoseconds / 1e9
         self.process_twist(msg, "MANUAL")
 
