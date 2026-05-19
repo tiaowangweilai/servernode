@@ -329,7 +329,7 @@ private:
 
 class BaseRadarHandler : public BaseHandler {
 public:
-    bool isOnline() override { return true; }
+    // bool isOnline() override { return true; }
     void init(rclcpp::Node* node) override {
         node_ = node;
         auto_pub_ = node->create_publisher<std_msgs::msg::String>("/cmd_vel_auto", 10);
@@ -375,18 +375,39 @@ public:
         return lidar;
     }
 
+    // Json::Value getReport() override {
+    //     Json::Value lidar;
+    //     if (last_odom_) {
+    //         lidar["x"] = last_odom_->pose.pose.position.x;
+    //         lidar["y"] = last_odom_->pose.pose.position.y;
+    //         lidar["angle"] = last_odom_->pose.pose.orientation.z; 
+    //         lidar["target_idx"] = 0;
+    //         lidar["loc_stat"] = isOnline() ? 1 : 0;
+    //         lidar["state"] = isOnline() ? "running" : "stopped";
+    //     }
+    //     return lidar;
+    // }
+
     Json::Value getReport() override {
-        Json::Value lidar;
-        if (last_odom_) {
-            lidar["x"] = last_odom_->pose.pose.position.x;
-            lidar["y"] = last_odom_->pose.pose.position.y;
-            lidar["angle"] = last_odom_->pose.pose.orientation.z; 
-            lidar["target_idx"] = 0;
-            lidar["loc_stat"] = isOnline() ? 1 : 0;
-            lidar["state"] = isOnline() ? "running" : "stopped";
+            Json::Value lidar;
+            // std::lock_guard<std::mutex> lock(mutex_);
+            if (last_odom_) {
+                lidar["x"] = last_odom_->pose.pose.position.x;
+                lidar["y"] = last_odom_->pose.pose.position.y;
+                
+                // 四元数转偏航角 (yaw)
+                double qz = last_odom_->pose.pose.orientation.z;
+                double qw = last_odom_->pose.pose.orientation.w;
+                double yaw = 2.0 * std::atan2(qz, qw);
+                // RCLCPP_INFO(node_->get_logger(), "yaw: %f", yaw);
+                
+                lidar["angle"] = yaw * 180 / 3.14159265; 
+                lidar["target_idx"] = 0; 
+                lidar["loc_stat"] = isOnline() ? 1 : 0;
+                lidar["state"] = isOnline() ? "running" : "stopped";
+            }
+            return lidar;
         }
-        return lidar;
-    }
 
     Json::Value handleCommand(const Json::Value& data, const agv_protocol::MessageHeader&) override {
         Json::Value res;

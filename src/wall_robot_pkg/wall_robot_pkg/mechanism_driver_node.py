@@ -52,7 +52,7 @@ class MechanismDriverNode(Node):
         if init_ig35 is None or MD2202Controller is None: 
             return
         UNIFIED_BAUDRATE = 115200 
-        SHARED_PORT = '/dev/ttyACM1' 
+        SHARED_PORT = '/dev/ttyACM0' 
         try: 
             shared_ser = serial.Serial(SHARED_PORT, UNIFIED_BAUDRATE, timeout=0.2)
         except Exception as e: 

@@ -38,16 +38,25 @@ public:
         if (handlers_.count("radar")) {
             auto radar_ptr = std::dynamic_pointer_cast<BaseRadarHandler>(handlers_["radar"]);
             if (radar_ptr) {
-                Json::Value path_report = radar_ptr->getPathReport();
-                if (!path_report.empty()) {
-                    Json::Value path_payload;
-                    path_payload["lidar"] = path_report;
-                    // 打印 path_report 的内容
-                    std::cout << "--- Radar Path Report ---" << std::endl;
-                    std::cout << path_report.toStyledString() << std::endl; 
-                    std::cout << "-------------------------" << std::endl;
-                    reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                // Json::Value path_report = radar_ptr->getPathReport();
+                // if (!path_report.empty()) {
+                //     Json::Value path_payload;
+                //     path_payload["lidar"] = path_report;
+                //     // 打印 path_report 的内容
+                //     std::cout << "--- Radar Path Report ---" << std::endl;
+                //     std::cout << path_report.toStyledString() << std::endl; 
+                //     std::cout << "-------------------------" << std::endl;
+                //     reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                // }
+                Json::Value odom_report = radar_ptr->getReport();
+                if (!odom_report.empty()) {
+                    Json::Value odom_payload;
+                    odom_payload["lidar"] = odom_report;
+                    std::string msg = parser.buildRawMessage("agv", "response", odom_payload);
+                    RCLCPP_INFO(node_->get_logger(), "发送雷达数据: %s", msg.c_str());
+                    reports.push_back(msg);
                 }
+
             }
         }
 
@@ -116,6 +125,14 @@ public:
                     Json::Value path_payload;
                     path_payload["lidar"] = path_report;
                     reports.push_back(parser.buildRawMessage("agv", "response", path_payload));
+                }
+                Json::Value odom_report = radar_ptr->getReport();
+                if (!odom_report.empty()) {
+                    Json::Value odom_payload;
+                    odom_payload["lidar"] = odom_report;
+                    std::string msg = parser.buildRawMessage("agv", "response", odom_payload);
+                    // RCLCPP_INFO(node_->get_logger(), "发送雷达数据: %s", msg.c_str());
+                    reports.push_back(msg);
                 }
             }
         }

@@ -17,7 +17,7 @@ namespace agv_bridge {
 class WebSocketBridgeNode : public rclcpp::Node {
 public:
     WebSocketBridgeNode() : Node("websocket_bridge_node") {
-        this->declare_parameter("server_uri", "ws://192.168.137.65:9100");
+        this->declare_parameter("server_uri", "ws://192.168.137.61:9100");
         this->declare_parameter("local_server_port", 9001);
 
         // ... 初始化 WebSocket ...
