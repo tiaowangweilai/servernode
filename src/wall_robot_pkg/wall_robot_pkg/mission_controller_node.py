@@ -532,13 +532,19 @@ class MissionController(Node):
             tgt_info = self.targets[self.current_target_idx]
             pt_type = tgt_info.get("type", "NORMAL")
             
+            # 🌟 列过渡中间点：只导航不扫查
+            if pt_type == "TRANSITION":
+                self.get_logger().info("🔀 经过列过渡中间点，继续前往下一列首")
+                self.current_target_idx += 1
+                self.prepare_next_target()
+                return
+            
             if pt_type in ["COL_START", "REGION_START"]:
                 if not getattr(self, 'col_start_initialized', False):
                     self.get_logger().info("📌 ===== 开始列首初始化 =====")
                     self.m1_pub.publish(Int32(data=0))
                     time.sleep(0.5)
-                    if self.current_target_idx == 0:
-                        self._send_agv_event("capture")  
+                    self._send_agv_event("capture")  
                     self.col_start_initialized = True
                     self.current_col_point_idx = 0
                 
@@ -557,7 +563,22 @@ class MissionController(Node):
                 self.get_logger().info(f"🏁 本列结束，发 save！开往下一列")
                 self._send_agv_event("save") 
                 self.capture_authorized = False
+                self.col_start_initialized = False
                 self.ig35_pub.publish(Int32(data=0)) # 横杆回零
+                
+                # 🌟 列过渡：插入三角形路径中间点 (先平移到目标列X，再纵向导航)
+                if self.current_target_idx + 1 < len(self.targets):
+                    next_tgt = self.targets[self.current_target_idx + 1]
+                    curr = self.current_pose
+                    if curr:
+                        intermediate = {
+                            "x": next_tgt["x"],
+                            "y": curr["y"],
+                            "yaw": 90.0,
+                            "type": "TRANSITION"
+                        }
+                        self.targets.insert(self.current_target_idx + 1, intermediate)
+                        self.get_logger().info(f"🔺 插入列过渡中间点: ({intermediate['x']:.3f}, {intermediate['y']:.3f})")
 
             if self.current_target_idx == len(self.targets) - 1:
                 self.get_logger().info(f"🎉 全部扫完！发 work_complete！")
