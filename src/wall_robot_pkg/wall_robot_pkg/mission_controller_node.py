@@ -17,6 +17,7 @@ from . import Path_interpolation
 # 🌟 删除了所有硬件库导入 (GPIO, IG35, motor_485)
 
 # === 导航常量 ===
+ACC_SPACING_MM = 70.0        # 导航精度固定70mm，不接受上位机参数
 XY_TARGET = 30.0            
 AXIS_ALIGN_THRESH = 5.0     
 YAW_THRESH = 3.0            
@@ -150,22 +151,27 @@ class MissionController(Node):
         # ==========================================
         # 执行指令分支
         # ==========================================
+        if cmd in ("check", "is_online", "true", "false"):
+            self.get_logger().info(f"⏭️ [主控] 跳过自检相关指令: {cmd}")
+            return
+
         if cmd == "nav_path":
+            if "target_x" not in params or "target_y" not in params:
+                self.get_logger().warn(f"⛔ [主控] nav_path 缺少 target_x/target_y 参数，忽略: {raw}")
+                return
             w = float(params.get("target_x", self.param_width))
             h = float(params.get("target_y", self.param_height))
             
-            spacing_raw = float(params.get("push_accuracy", 0.08))
-            spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
-            
+            # 🌟 固定精度为 ACC_SPACING_MM，不接受上位机下发
             self.param_width = w
             self.param_height = h
-            self.param_acc = spacing
+            self.param_acc = ACC_SPACING_MM
             
             self.ig35_start_pulse = int(params.get("ig35_start", self.ig35_start_pulse))
             self.ig35_end_pulse = int(params.get("ig35_end", self.ig35_end_pulse))
             self.scan_speed = int(params.get("scan_speed", self.scan_speed))
             
-            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 速度={self.scan_speed}rpm")
+            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={self.param_acc}mm, 速度={self.scan_speed}rpm")
             
             self.is_click_nav = False
             self.generate_path(w, h, self.param_acc)
@@ -236,27 +242,32 @@ class MissionController(Node):
 
         cmd = parsed.get("command", "")
         
+        if cmd in ("check", "is_online", "true", "false"):
+            self.get_logger().info(f"⏭️ [主控] 跳过 /cmd_vel_auto 自检指令: {cmd}")
+            return
+
         # 🎯 拦截到导航指令！
         if cmd == "nav_path":
+            # ⛔ 必须携带 target_x/target_y 参数，否则拒绝（防止上位机自检时发空壳 nav_path）
+            if "target_x" not in parsed or "target_y" not in parsed:
+                self.get_logger().warn(f"⛔ [主控] /cmd_vel_auto nav_path 缺少 target_x/target_y，忽略: {raw}")
+                return
             self.get_logger().info(f"📥 [主控] 从 /cmd_vel_auto 拦截到导航指令: {raw}")
             
             # 因为 C++ 是直接透传 data，所以直接从 parsed 提取即可
             w = float(parsed.get("target_x", self.param_width))
             h = float(parsed.get("target_y", self.param_height))
             
-            # 单位转换：如果精度数字小于10，判断为米(m)，转为底层的毫米(mm)
-            spacing_raw = float(parsed.get("push_accuracy", 0.08))
-            spacing = spacing_raw * 1000.0 if spacing_raw < 10.0 else spacing_raw 
-            
+            # 🌟 固定精度为 ACC_SPACING_MM，不接受上位机下发
             self.param_width = w
             self.param_height = h
-            self.param_acc = spacing
+            self.param_acc = ACC_SPACING_MM
             
             self.ig35_start_pulse = int(parsed.get("ig35_start", self.ig35_start_pulse))
             self.ig35_end_pulse = int(parsed.get("ig35_end", self.ig35_end_pulse))
             self.scan_speed = int(parsed.get("scan_speed", self.scan_speed))
             
-            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={spacing}mm, 扫查速度={self.scan_speed}rpm")
+            self.get_logger().info(f"🎯 [主控] 开始规划自动导航! 宽={w}mm, 高={h}mm, 间距={self.param_acc}mm, 扫查速度={self.scan_speed}rpm")
             
             self.is_click_nav = False
             self.generate_path(w, h, self.param_acc)
@@ -467,12 +478,12 @@ class MissionController(Node):
             
             if is_outward:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫出 (至 {self.ig35_start_pulse})...")
-                self.ig35_speed_pub.publish(Int32(data=self.scan_speed))
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
                 self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
                 time.sleep(3.0) 
             else:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫回 (至 {self.ig35_end_pulse})...")
-                self.ig35_speed_pub.publish(Int32(data=self.scan_speed))
+                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
                 self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
                 time.sleep(2.5)
 
@@ -568,15 +579,18 @@ class MissionController(Node):
                 data = item.get("data", {})
                 cmd_type = data.get("command", "")
                 if cmd_type == "nav_start" and target == "agv":
+                    if "width" not in data or "height" not in data:
+                        self.get_logger().warn(f"⛔ [主控] nav_start 缺少 width/height 参数，忽略")
+                        return
                     w = float(data.get("width", self.param_width))
                     h = float(data.get("height", self.param_height))
-                    spacing = float(data.get("spacing", self.param_acc))
+                    # 🌟 固定精度为 ACC_SPACING_MM，不接受上位机下发
                     self.param_width = w
                     self.param_height = h
-                    self.param_acc = spacing
+                    self.param_acc = ACC_SPACING_MM
                     self.is_click_nav = False
-                    self.get_logger().info(f"nav_start: w={w}, h={h}, spacing={spacing}")
-                    self.generate_path(w, h, spacing)
+                    self.get_logger().info(f"nav_start: w={w}, h={h}, spacing={ACC_SPACING_MM}")
+                    self.generate_path(w, h, ACC_SPACING_MM)
                     if self.targets:
                         self.current_target_idx = 0
                         self.current_col_point_idx = 0
