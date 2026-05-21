@@ -17,7 +17,7 @@ namespace agv_bridge {
 class WebSocketBridgeNode : public rclcpp::Node {
 public:
     WebSocketBridgeNode() : Node("websocket_bridge_node") {
-        this->declare_parameter("server_uri", "ws://192.168.137.61:9100");
+        this->declare_parameter("server_uri", "ws://192.168.137.141:9100");
         this->declare_parameter("local_server_port", 9001);
 
         // ... 初始化 WebSocket ...
@@ -32,6 +32,9 @@ public:
 
         ws_client_->start();
         ws_server_->start();
+
+        // 启动后立即打开所有底层节点 (wall_robot_pkg)
+        startLaunch("vacuum_adsorption_robot");
 
         // 🌟 开启状态回传定时器 (5Hz)
         report_timer_ = this->create_wall_timer(
