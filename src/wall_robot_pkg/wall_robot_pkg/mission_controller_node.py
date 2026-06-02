@@ -378,6 +378,11 @@ class MissionController(Node):
                 if k == 0: pt_type = "REGION_START"
                 if k == len(grid_third) - 1: pt_type = "REGION_END"
                 self.targets.append({"x": pt[0]/1000.0, "y": pt[1]/1000.0, "yaw": 180.0, "type": pt_type})
+            # Store path structure info for upper computer split_configs
+            self._nav_num_cols = num_cols
+            self._nav_num_rows = num_rows
+            self._nav_bottom_len = len(grid_bottom)
+            self._nav_third_len = len(grid_third)
             self.publish_planned_path()
         except: pass
 
@@ -386,9 +391,14 @@ class MissionController(Node):
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = "map"
-        for tgt in self.targets:
+        for idx, tgt in enumerate(self.targets):
             pose = PoseStamped(); pose.header = path_msg.header
             pose.pose.position.x = float(tgt['x']); pose.pose.position.y = float(tgt['y'])
+            if idx == 0 and hasattr(self, '_nav_num_cols'):
+                pose.pose.orientation.x = float(self._nav_num_cols)
+                pose.pose.orientation.y = float(self._nav_num_rows)
+                pose.pose.orientation.z = float(self._nav_bottom_len)
+                pose.pose.orientation.w = float(self._nav_third_len)
             path_msg.poses.append(pose)
         self.path_pub.publish(path_msg)
 
@@ -479,11 +489,13 @@ class MissionController(Node):
             if is_outward:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫出 (至 {self.ig35_start_pulse})...")
                 self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                time.sleep(0.1) # 必须加延时！让底层有时间把速度设进去
                 self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
                 time.sleep(3.0) 
             else:
                 self.get_logger().info(f"▶️ 2. 下发：横杆扫回 (至 {self.ig35_end_pulse})...")
                 self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                time.sleep(0.1) # 必须加延时！让底层有时间把速度设进去
                 self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
                 time.sleep(2.5)
 

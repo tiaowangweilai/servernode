@@ -2,6 +2,7 @@
 
 #include "agv_bridge/robot.hpp"
 #include "agv_bridge/handlers.hpp"
+#include <fstream>
 
 namespace agv_bridge {
 
@@ -46,7 +47,12 @@ public:
                     std::cout << "--- Radar Path Report ---" << std::endl;
                     std::cout << path_report.toStyledString() << std::endl; 
                     std::cout << "-------------------------" << std::endl;
-                    reports.push_back(parser.buildRawMessage(robot_id_, "response", path_payload));
+                    {
+                        std::string _nav_msg = parser.buildRawMessage(robot_id_, "response", path_payload);
+                        std::ofstream _f("/home/c403/jiang/servernode_2026.4.28/nav_path_sent.json");
+                        if (_f) _f << _nav_msg;
+                        reports.push_back(_nav_msg);
+                    }
                 }
                 Json::Value odom_report = radar_ptr->getReport();
                 if (!odom_report.empty()) {
@@ -124,7 +130,12 @@ public:
                     }
                     Json::Value path_payload;
                     path_payload["lidar"] = path_report;
-                    reports.push_back(parser.buildRawMessage("agv", "response", path_payload));
+                    {
+                        std::string _nav_msg = parser.buildRawMessage("agv", "response", path_payload);
+                        std::ofstream _f("/home/c403/jiang/servernode_2026.4.28/nav_path_sent.json");
+                        if (_f) _f << _nav_msg;
+                        reports.push_back(_nav_msg);
+                    }
                 }
                 Json::Value odom_report = radar_ptr->getReport();
                 if (!odom_report.empty()) {

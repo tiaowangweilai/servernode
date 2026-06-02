@@ -352,25 +352,81 @@ public:
         Json::Value lidar;
         lidar["command"] = "nav_path";
         Json::Value path_array(Json::arrayValue);
-        
+
+        // 先计算 split_configs 各区间的范围，用于确定 theta
+        int main_pts = 0, bottom_pts = 0, third_pts = 0;
+        bool has_split = false;
+        if (!last_path_->poses.empty()) {
+            const auto& o0 = last_path_->poses[0].pose.orientation;
+            int num_seg = static_cast<int>(std::round(o0.x));
+            if (num_seg > 0) {
+                int first_val = static_cast<int>(std::round(o0.y));
+                int bottom_val = static_cast<int>(std::round(o0.z));
+                int third_val = static_cast<int>(std::round(o0.w));
+                int main_cols = num_seg;
+                main_pts = main_cols * first_val;
+                bottom_pts = bottom_val;
+                third_pts = third_val;
+                has_split = true;
+            }
+        }
+
         for (size_t i = 0; i < last_path_->poses.size(); ++i) {
             const auto& pose = last_path_->poses[i].pose;
             Json::Value p;
             p["x"] = pose.position.x;
             p["y"] = pose.position.y;
-            
-            // 四元数转偏航角 (简单 2D 情况)
-            double qz = pose.orientation.z;
-            double qw = pose.orientation.w;
-            double theta = 2.0 * std::atan2(qz, qw);
+
+            double theta = 0.0;
+            if (has_split) {
+                // 根据 split_configs 区间确定理论朝向角
+                if (i < main_pts) {
+                    theta = M_PI / 2.0;       // 主区域向上：90°
+                } else if (i < main_pts + bottom_pts) {
+                    theta = 0.0;              // 底部向右：0°
+                } else {
+                    theta = M_PI;             // 第三区域向左：180°
+                }
+            } else if (i < last_path_->poses.size() - 1) {
+                // 无 split_configs 时从相邻点推算方向
+                double dx = last_path_->poses[i+1].pose.position.x - pose.position.x;
+                double dy = last_path_->poses[i+1].pose.position.y - pose.position.y;
+                theta = std::atan2(dy, dx);
+            }
             p["theta"] = theta;
-            
-            // 默认类型逻辑：最后一个点为 target，其余为 normal
+
             p["type"] = (i == last_path_->poses.size() - 1) ? "target" : "normal";
             path_array.append(p);
         }
-        
+
         lidar["path"] = path_array;
+
+        // Decode split_configs from first pose orientation (encoded by Python)
+        if (!last_path_->poses.empty()) {
+            const auto& o0 = last_path_->poses[0].pose.orientation;
+            int num_segments = static_cast<int>(std::round(o0.x));
+            if (num_segments > 0) {
+                int first_val = static_cast<int>(std::round(o0.y));
+                int bottom_val = static_cast<int>(std::round(o0.z));
+                int third_val = static_cast<int>(std::round(o0.w));
+                Json::Value configs(Json::arrayValue);
+
+                // Main zone: num_segments - (bottom>0) - (third>0) columns, each with first_val points
+                int main_cols = num_segments;
+
+                for (int i = 0; i < main_cols; i++) {
+                    configs.append(first_val);
+                }
+                if (bottom_val > 0) {
+                    configs.append(bottom_val);
+                }
+                if (third_val > 0) {
+                    configs.append(third_val);
+                }
+                lidar["split_configs"] = configs;
+            }
+        }
+
         new_path_available_ = false;
         return lidar;
     }
@@ -435,6 +491,7 @@ protected:
     nav_msgs::msg::Path::SharedPtr last_path_;
     bool new_path_available_ = false;
     std::mutex path_mutex_;
+
 };
 
 class RadarHandler : public BaseRadarHandler {

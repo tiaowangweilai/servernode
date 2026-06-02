@@ -53,6 +53,7 @@ class MechanismDriverNode(Node):
             return
         UNIFIED_BAUDRATE = 115200 
         SHARED_PORT = '/dev/ttyACM0' 
+
         try: 
             shared_ser = serial.Serial(SHARED_PORT, UNIFIED_BAUDRATE, timeout=0.2)
         except Exception as e: 
