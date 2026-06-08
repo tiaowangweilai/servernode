@@ -5,7 +5,7 @@ import struct
 import time
 
 class MD2202Controller:
-    def __init__(self, port='/dev/ttyACM0', baudrate=9600):
+    def __init__(self, port='/dev/ttyACM0', baudrate=115200):
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0.2)
             print(f"✅ 成功打开电机串口: {port} (波特率 {baudrate})")
@@ -97,7 +97,10 @@ def scan_sequence(motor_sys, m1_pulse=1584, m2_pulse=1513):
 
 # 兼容独立运行测试
 if __name__ == '__main__':
-    motor = MD2202Controller(port='/dev/ttyACM0', baudrate=9600)
+    # motor = MD2202Controller(port='/dev/ttyACM0', baudrate=115200)
+    motor = MD2202Controller(port='/dev/ttyCH341USB1', baudrate=115200)
+    # motor.set_param_m1()
+    # motor.set_param_m2()
     if motor.ser is not None:
         try:
             print("--- 初始化与寻零 ---")

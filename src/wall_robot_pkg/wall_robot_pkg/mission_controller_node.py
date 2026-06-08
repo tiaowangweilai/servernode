@@ -518,17 +518,17 @@ class MissionController(Node):
                 self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
                 time.sleep(0.1) # 🌟 必须加延时！让底层有时间把速度设进去
                 self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
-                time.sleep(3.0)
-                self.pushrod_pub.publish(Int32(data=500))
-                time.sleep(0.6)
+                time.sleep(2.5)
+                self.pushrod_pub.publish(Int32(data=3000))
+                time.sleep(1.5)
                 
                 self.get_logger().info(f"◀️ [单点测试] 下发 横杆扫回...")
                 self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
                 time.sleep(0.1) # 🌟 必须加延时！
                 self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
                 time.sleep(2.5)
-                self.pushrod_pub.publish(Int32(data=500))
-                time.sleep(0.6)
+                # self.pushrod_pub.publish(Int32(data=3000))
+                # time.sleep(1.5)
                 
                 self.get_logger().info("◀️ [单点测试] 下发 M1 抬起...")
                 self.m1_pub.publish(Int32(data=0))

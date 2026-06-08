@@ -7,9 +7,9 @@ import time
 
 # === 导入底层硬件库 (只在这个节点里导入！) ===
 try:
-    from .GPIO import gpio_init, push_rod_forward_time
+    from .GPIO import gpio_init, push_rod_forward_time, push_rod_backward
 except ImportError:
-    gpio_init, push_rod_forward_time = None, None
+    gpio_init, push_rod_forward_time, push_rod_backward = None, None, None
 
 try:
     from .IG35 import initialize_driver as init_ig35, move_to_position as move_ig35
@@ -26,40 +26,41 @@ class MechanismDriverNode(Node):
     def __init__(self):
         self.current_ig35_speed = 20
         super().__init__('mechanism_driver_node')
-        
+
         # 🌟 1. 订阅标准控制话题
         self.m1_sub = self.create_subscription(Int32, '/mech/m1_target', self.m1_callback, 10)
         self.m2_sub = self.create_subscription(Int32, '/mech/m2_target', self.m2_callback, 10)
         self.ig35_sub = self.create_subscription(Int32, '/mech/ig35_target', self.ig35_callback, 10)
         self.pushrod_sub = self.create_subscription(Int32, '/mech/push_rod_time', self.pushrod_callback, 10)
+        self.pushrod_bwd_sub = self.create_subscription(Int32, '/mech/push_rod_backward', self.pushrod_backward_callback, 10)
         self.ig35_speed_sub = self.create_subscription(Int32, '/mech/ig35_speed', self.ig35_speed_callback, 10)
-        
+
         # 🌟 2. 硬件统一初始化
         self.ig35_motor = None
         self.m1m2_motor = None
         self.init_motor_hardware()
-        
+
         if gpio_init:
-            try: 
+            try:
                 gpio_init()
                 self.get_logger().info("✅ GPIO 推杆初始化成功")
-            except Exception as e: 
+            except Exception as e:
                 self.get_logger().warn(f"⚠️ GPIO 初始化失败: {e}")
 
         self.get_logger().info("⚙️ [机构驱动节点] 就绪，专职伺服底层硬件！")
 
     def init_motor_hardware(self):
-        if init_ig35 is None or MD2202Controller is None: 
+        if init_ig35 is None or MD2202Controller is None:
             return
-        UNIFIED_BAUDRATE = 115200 
-        SHARED_PORT = '/dev/ttyACM0' 
+        UNIFIED_BAUDRATE = 115200
+        SHARED_PORT = '/dev/ttyACM0'
 
-        try: 
+        try:
             shared_ser = serial.Serial(SHARED_PORT, UNIFIED_BAUDRATE, timeout=0.2)
-        except Exception as e: 
+        except Exception as e:
             self.get_logger().error(f"❌ 共享串口打开失败: {e}")
             return
-            
+
         original_serial = serial.Serial
         serial.Serial = lambda *args, **kwargs: shared_ser
         try:
@@ -72,9 +73,9 @@ class MechanismDriverNode(Node):
                 self.m1m2_motor.reset_m1()
                 self.m1m2_motor.reset_m2()
             self.get_logger().info("✅ IG35 与 M1/M2 串口初始化成功")
-        except Exception as e: 
+        except Exception as e:
             self.get_logger().error(f"电机初始化失败: {e}")
-        finally: 
+        finally:
             serial.Serial = original_serial
 
     # ==========================================
@@ -110,11 +111,17 @@ class MechanismDriverNode(Node):
     def pushrod_callback(self, msg):
         duration_ms = msg.data
         if push_rod_forward_time:
-            self.get_logger().info(f"⚙️ 推杆动作触发，持续 {duration_ms} ms")
+            self.get_logger().info(f"⚙️ 推杆前进 {duration_ms} ms")
             push_rod_forward_time(duration_ms)
 
+    def pushrod_backward_callback(self, msg):
+        duration_ms = msg.data
+        if push_rod_backward:
+            self.get_logger().info(f"⚙️ 推杆后退 {duration_ms} ms")
+            push_rod_backward(duration_ms)
+
     def destroy_node(self):
-        if self.ig35_motor: 
+        if self.ig35_motor:
             self.ig35_motor.close()
         super().destroy_node()
 
