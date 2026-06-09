@@ -572,8 +572,9 @@ class MissionController(Node):
             self.current_col_point_idx += 1 
                 
             if pt_type in ["COL_END", "REGION_END"]:
-                self.get_logger().info(f"🏁 本列结束，发 save！开往下一列")
-                self._send_agv_event("save") 
+                if self.current_target_idx < len(self.targets) - 1:
+                    self.get_logger().info(f"🏁 本列结束，发 save！开往下一列")
+                    self._send_agv_event("save")
                 self.capture_authorized = False
                 self.col_start_initialized = False
                 self.ig35_pub.publish(Int32(data=0)) # 横杆回零
