@@ -137,6 +137,20 @@ public:
             res["result"] = "ok";
         }
 
+        else if (cmd.empty() && data.isMember("status")) {
+            // 仅将 alarm_on/alarm_off 闸门信号转发到 ROS，其他状态忽略
+            std::string status_val = data["status"].asString();
+            if (status_val == "alarm_on" || status_val == "alarm_off") {
+                auto msg = std_msgs::msg::String();
+                Json::Value fwd;
+                fwd["command"] = status_val;
+                Json::StreamWriterBuilder writer;
+                msg.data = Json::writeString(writer, fwd);
+                sys_pub_->publish(msg);
+                res["result"] = "forwarded";
+                res["command"] = status_val;
+            }
+        }
         else {
             res["result"] = cmd + "_successed";
         }

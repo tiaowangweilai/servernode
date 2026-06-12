@@ -22,7 +22,7 @@ class ChassisDriverNode(Node):
     def __init__(self):
         super().__init__('chassis_driver_node')
         
-        self.declare_parameter('serial_port', '/dev/ttyCH341USB0') 
+        self.declare_parameter('serial_port', '/dev/ttyCH341USB1') 
         self.declare_parameter('baud_rate', 115200)
         self.port = self.get_parameter('serial_port').value
         self.baud = self.get_parameter('baud_rate').value

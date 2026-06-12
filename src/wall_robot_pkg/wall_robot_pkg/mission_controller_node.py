@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import Twist, Point, PoseStamped
 from std_msgs.msg import String, Int32
@@ -13,6 +14,7 @@ import time
 from cv_bridge import CvBridge
 import json
 from . import Path_interpolation
+from . import water_motor
 
 # 🌟 删除了所有硬件库导入 (GPIO, IG35, motor_485)
 
@@ -99,7 +101,12 @@ class MissionController(Node):
         self.current_target_idx = 0      
         self.current_col_point_idx = 0   
         self.capture_authorized = False
-        self.col_start_initialized = False 
+        self.col_start_initialized = False
+        self.gate_alarm = False
+        self.gate_alarm_count = 0
+        self.scan_phase = None
+        self.phase_start_time = 0.0
+        self.phase_target_count = 0
         self.last_time = self.get_clock().now()
         self.param_width, self.param_height, self.param_acc = 2000.0, 2000.0, 80.0
         
@@ -115,15 +122,18 @@ class MissionController(Node):
     def command_callback(self, msg):
         import json as _json
         raw = msg.data
-        
-        # 1️⃣ 打印收到的最原始字符串
-        self.get_logger().info(f"📥 [主控] 收到 command 话题数据: {raw}")
-        
+
         try:
             parsed = _json.loads(raw)
         except Exception:
             # pure string cmd, not JSON
             parsed = {}
+
+        # 快速识别高频状态更新，不打印原始消息
+        cmd_check = parsed.get("command", "")
+        is_alarm_msg = cmd_check in ("alarm_on", "alarm_off")
+        if not is_alarm_msg:
+            self.get_logger().info(f"📥 [主控] 收到 command 话题数据: {raw}")
 
         # ==========================================
         # 🌟 智能提取指令引擎：自动穿透 payload, lidar 或 agv
@@ -212,10 +222,15 @@ class MissionController(Node):
         elif cmd == "work_complete":
             self.get_logger().info("[主控] work_complete confirmed by server")
                 
-        elif cmd == "update_status":
-            status = params.get("status", "unknown")
-            source = params.get("source_key", "unknown")
-            self.get_logger().info(f"闸门状态更新: [{source}] status={status}")
+        elif cmd == "alarm_on":
+            self.gate_alarm_count += 1
+            if self.gate_alarm_count == 1:
+                self.get_logger().info("🔔 [主控] 收到闸门 alarm_on")
+            self.gate_alarm = True
+        elif cmd == "alarm_off":
+            if self.gate_alarm:
+                self.get_logger().info("🔕 [主控] 闸门 alarm_off")
+            self.gate_alarm = False
     def nav_goal_callback(self, msg):
         self.param_width = msg.x
         self.param_height = msg.y
@@ -415,7 +430,9 @@ class MissionController(Node):
 
     def control_loop(self):
         if self.state == "MANUAL_ACTION":
-            self.cmd_pub.publish(String(data=json.dumps({"vx":0,"wz":0}))); self.do_manual_action(); return
+            self.cmd_pub.publish(String(data=json.dumps({"vx":0,"wz":0})))
+            self._advance_scan_phase()
+            return
         if self.current_pose is None or not self.targets: return
         now_ts = self.get_clock().now()
         dt = max(1e-3, (now_ts - self.last_time).nanoseconds / 1e9)
@@ -508,36 +525,71 @@ class MissionController(Node):
             time.sleep(0.5)
         except Exception as e:
             self.get_logger().error(f"❌ 序列下发崩溃: {e}")
-    def _execute_single_scan_sequence(self):
-            try:
-                self.get_logger().info("▶️ [单点测试] 下发 M1 下压...")
-                self.m1_pub.publish(Int32(data=800))
-                time.sleep(1.5)
-                
-                self.get_logger().info(f"▶️ [单点测试] 下发 横杆扫出...")
-                # self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
-                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+10))
-                time.sleep(0.1) # 🌟 必须加延时！让底层有时间把速度设进去
-                self.ig35_pub.publish(Int32(data=self.ig35_start_pulse+4))
+    def _advance_scan_phase(self):  
+        """非阻塞单次扫查状态机，每次 timer tick 推进一个阶段"""    
 
-                time.sleep(2.5)
-                self.pushrod_pub.publish(Int32(data=300))
-                time.sleep(1.5)
-                
-                self.get_logger().info(f"◀️ [单点测试] 下发 横杆扫回...")
-                # self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
-                self.ig35_speed_pub.publish(Int32(data=self.scan_speed+10))
-                time.sleep(0.1) # 🌟 必须加延时！
-                self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
-                time.sleep(2.5)
-                # self.pushrod_pub.publish(Int32(data=3000))
-                # time.sleep(1.5)
-                
-                self.get_logger().info("◀️ [单点测试] 下发 M1 抬起...")
-                self.m1_pub.publish(Int32(data=0))
-                time.sleep(0.5)
-            except Exception as e:
-                self.get_logger().error(f"❌ 单次序列崩溃: {e}")
+        
+        now = time.time()
+        try:
+            if self.scan_phase is None:
+                # === 阶段0：M1 下压 ===
+                self.get_logger().info("▶️ [单点测试] 下发 M1 下压至固定位置...")
+                self.m1_pub.publish(Int32(data=800))
+                self.scan_phase = "PRESS_DOWN"
+                self.phase_start_time = now
+
+            elif self.scan_phase == "PRESS_DOWN":
+                if now - self.phase_start_time >= 1.5:
+                    self.get_logger().info("▶️ [单点测试] 通道一水泵启动(占空比 100%)...")
+                    water_motor.control_channel1_pwm(2000, 100)
+                    self.phase_target_count = self.gate_alarm_count + 1
+                    self.scan_phase = "WAIT_ALARM"
+                    self.phase_start_time = now
+                    self.get_logger().info("⏳ [单点测试] 等待闸门 alarm_on 信号...")
+
+            elif self.scan_phase == "WAIT_ALARM":
+                if self.gate_alarm_count >= self.phase_target_count:
+                    self.get_logger().info("🔔 [单点测试] 收到 alarm_on，调低通道一占空比至 20%...")
+                    water_motor.control_channel1_pwm(2000, 20)
+                    self.scan_phase = "SCAN_OUT"
+                    self.phase_start_time = time.time()
+                    self.get_logger().info("▶️ [单点测试] 下发 横杆扫出...")
+                    self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                    time.sleep(0.1)
+                    self.ig35_pub.publish(Int32(data=self.ig35_start_pulse))
+                elif now - self.phase_start_time > 30.0:
+                    self.get_logger().warn("⚠️ [单点测试] 等待 alarm_on 超时，停止流程")
+                    water_motor.control_channel1_pwm(0, 0, enable=False)
+                    self.m1_pub.publish(Int32(data=0))
+                    self.scan_phase = None
+                    self.state = "IDLE"
+
+            elif self.scan_phase == "SCAN_OUT":
+                if now - self.phase_start_time >= 2.5:
+                    self.pushrod_pub.publish(Int32(data=300))
+                    self.scan_phase = "SCAN_BACK"
+                    self.phase_start_time = time.time()
+                    self.get_logger().info("◀️ [单点测试] 下发 横杆扫回...")
+                    self.ig35_speed_pub.publish(Int32(data=self.scan_speed+120))
+                    time.sleep(0.1)
+                    self.ig35_pub.publish(Int32(data=self.ig35_end_pulse))
+
+            elif self.scan_phase == "SCAN_BACK":
+                if now - self.phase_start_time >= 2.5:
+                    self.get_logger().info("◀️ [单点测试] 下发 M1 抬起，关闭水泵...")
+                    self.m1_pub.publish(Int32(data=0))
+                    water_motor.control_channel1_pwm(0, 0, enable=False)
+                    self.scan_phase = None
+                    self.state = "IDLE"
+
+        except Exception as e:
+            self.get_logger().error(f"❌ 单次序列崩溃: {e}")
+            try:
+                water_motor.control_channel1_pwm(0, 0, enable=False)
+            except:
+                pass
+            self.scan_phase = None
+            self.state = "IDLE"
 
     def do_action(self):
         if self.is_click_nav:
@@ -639,14 +691,21 @@ class MissionController(Node):
             self.get_logger().error(f"params_callback error: {e}")
 
     def do_manual_action(self):
-        self._execute_single_scan_sequence()
-        self.state = "IDLE"
+        # 状态机由控制循环在 control_loop 中驱动，do_manual_action 仅作入口
+        if self.scan_phase is None:
+            pass  # _advance_scan_phase 会在下一次 control_loop 时启动
 
 def main(args=None):
     rclpy.init(args=args)
     node = MissionController()
-    try: rclpy.spin(node)
-    except KeyboardInterrupt: pass
-    finally: node.destroy_node(); rclpy.shutdown()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__': main()

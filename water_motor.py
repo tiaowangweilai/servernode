@@ -4,7 +4,7 @@ import serial
 
 class YKPPWM103TController:
 
-    def __init__(self, port="/dev/ttyCH341USB0", baudrate=115200, device_addr=0x01):
+    def __init__(self, port="/dev/ttyCH341USB1", baudrate=115200, device_addr=0x01):
         """底层的 Modbus 驱动控制器"""
         self.addr = device_addr
         self.ser = serial.Serial(
@@ -63,7 +63,7 @@ class YKPPWM103TController:
 
 # 1. 创建全局唯一的控制器实例
 _controller = YKPPWM103TController(
-    port="/dev/ttyCH341USB0", baudrate=115200, device_addr=0x01
+    port="/dev/ttyCH341USB1", baudrate=115200, device_addr=0x01
 )
 _controller.init_channels_mode()
 
